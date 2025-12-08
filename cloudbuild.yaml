@@ -1,0 +1,23 @@
+steps:
+  - name: gcr.io/cloud-builders/gcloud
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        gcloud secrets versions access latest --secret=SHELOB_SECRET_HEADER > .shelob
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        docker build -t europe-west3-docker.pkg.dev/precisely-production/services/jackson:$SHORT_SHA .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - europe-west3-docker.pkg.dev/precisely-production/services/jackson:$SHORT_SHA
+  - name: gcr.io/cloud-builders/curl
+    entrypoint: 'bash'
+    env:
+      - 'SHELOB_TARGETS=$_SHELOB_TARGETS'
+    args: ['./deploy_shelob.sh', '$_CLUSTER', 'jackson', '$SHORT_SHA', 'provisioning']
+timeout: 1200s
