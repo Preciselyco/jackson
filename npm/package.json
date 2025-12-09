@@ -65,6 +65,7 @@
     "redis": "4.7.1",
     "reflect-metadata": "0.2.2",
     "ripemd160": "2.0.3",
+    "scim-patch": "^0.8.3",
     "better-sqlite3": "12.11.1",
     "typeorm": "0.3.31"
   },

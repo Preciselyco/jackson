@@ -8,12 +8,13 @@ import type {
   EventCallback,
   IDirectoryConfig,
   IUsers,
-  UserPatchOperation,
 } from '../../typings';
-import { parseUserPatchRequest, extractStandardUserAttributes, updateRawUserAttributes } from './utils';
+import { extractStandardUserAttributes } from './utils';
 import { sendEvent } from '../utils';
 import { isConnectionActive } from '../../controller/utils';
 import { randomUUID } from 'crypto';
+import { scimPatch, type ScimPatchOperation } from 'scim-patch';
+import _ from 'lodash';
 
 interface DirectoryUsersParams {
   directories: IDirectoryConfig;
@@ -87,30 +88,37 @@ export class DirectoryUsers {
   }
 
   public async patch(directory: Directory, user: User, body: any): Promise<DirectorySyncResponse> {
-    const { Operations } = body as { Operations: UserPatchOperation[] };
+    const { Operations } = body as { Operations: ScimPatchOperation[] };
+
+    let rawAttributes: any = user.raw;
+    // Loop through operations to prevent invalid patches to not break the whole patch
+    for (const op of Operations) {
+      try {
+        rawAttributes = scimPatch(rawAttributes, [op]);
+      } catch (e) {
+        console.log('scimPatch', e);
+      }
+    }
 
     let attributes: Partial<User> = {};
-    let rawAttributes = {};
-
-    // There can be multiple update operations in a single request for a user
-    for (const operation of Operations) {
-      const parsedAttributes = parseUserPatchRequest(operation);
-
-      attributes = {
-        ...attributes,
-        ...parsedAttributes.attributes,
-      };
-
-      rawAttributes = {
-        ...rawAttributes,
-        ...parsedAttributes.rawAttributes,
-      };
+    if (_.has(rawAttributes, 'active')) {
+      attributes.active = rawAttributes.active;
+    }
+    // The patched raw resource is the source of truth, so a name field removed by
+    // an op: "remove" has to be cleared on the user model rather than left stale.
+    attributes.first_name = _.get(rawAttributes, 'name.givenName', '');
+    attributes.last_name = _.get(rawAttributes, 'name.familyName', '');
+    if (_.has(rawAttributes, 'emails')) {
+      const email = _.find(rawAttributes.emails, (e: Record<string, string>) => e.type == 'work');
+      if (email) {
+        attributes.email = email.value;
+      }
     }
 
     const { data: updatedUser } = await this.users.update(user.id, {
       ...user,
       ...attributes,
-      raw: updateRawUserAttributes(user.raw, rawAttributes),
+      raw: rawAttributes,
     });
 
     await sendEvent('user.updated', { directory, user: updatedUser }, this.callback);
