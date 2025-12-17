@@ -101,6 +101,20 @@ export class DirectoryUsers {
       }
     }
 
+    const euser = 'urn:ietf:params:scim:schemas:extension:enterprise:2.0:User';
+
+    // Fix Azure faulty patch of manager value. Azure sets the manager to a string value which it then can't parse so we need to reconstruct the value.
+    if (
+      rawAttributes[euser] &&
+      rawAttributes[euser]['manager'] &&
+      (typeof rawAttributes[euser]['manager'] === 'string' ||
+        rawAttributes[euser]['manager'] instanceof String)
+    ) {
+      rawAttributes[euser]['manager'] = {
+        value: rawAttributes[euser]['manager'],
+      };
+    }
+
     let attributes: Partial<User> = {};
     if (_.has(rawAttributes, 'active')) {
       attributes.active = rawAttributes.active;
