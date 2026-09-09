@@ -20,16 +20,17 @@ should always match the list below, with one exception — see _Lockfiles_ below
 
 ## Files we own or modify
 
-| File                                            | Kind     | Purpose                                         |
-| ----------------------------------------------- | -------- | ----------------------------------------------- |
-| `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide        |
-| `Makefile`                                      | added    | Manual container build and push                 |
-| `cloudbuild.yaml`                               | added    | Cloud Build pipeline                            |
-| `deploy_shelob.sh`                              | added    | Rollout call to Shelob                          |
-| `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API   |
-| `proxy.ts`                                      | modified | Exempts `/api/precisely/**` from authentication |
-| `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`       |
-| `npm/package.json`                              | modified | Declares the dependencies we add (see below)    |
+| File                                            | Kind     | Purpose                                          |
+| ----------------------------------------------- | -------- | ------------------------------------------------ |
+| `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide         |
+| `Makefile`                                      | added    | Manual container build and push                  |
+| `cloudbuild.yaml`                               | added    | Cloud Build pipeline                             |
+| `deploy_shelob.sh`                              | added    | Rollout call to Shelob                           |
+| `.github/workflows/precisely.yaml`              | added    | Our CI — checks, build and tests, pushes nothing |
+| `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API    |
+| `proxy.ts`                                      | modified | Exempts `/api/precisely/**` from authentication  |
+| `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`        |
+| `npm/package.json`                              | modified | Declares the dependencies we add (see below)     |
 
 ## Dependencies we add
 
@@ -97,6 +98,79 @@ Substitutions used:
 
 The deployment always targets the `jackson` deployment in the `provisioning`
 namespace.
+
+### `.github/workflows/precisely.yaml`
+
+Our GitHub Actions CI. It runs on pushes and pull requests against `precisely`,
+and on `workflow_dispatch`. Two jobs:
+
+- **`ci`** — `check-lint`, `check-types`, `check-format`, `check-locale`,
+  `npm run build`, the `npm/` library tests, and the Playwright e2e suite against
+  `mock-saml`. The `env` block is copied verbatim from upstream's `ci` job, so it
+  should be re-copied if upstream changes it.
+- **`image`** — builds the `Dockerfile` with `push: false`, purely to catch a
+  Dockerfile that stopped building after an upstream sync.
+
+#### Postgres only
+
+Upstream's `ci` job runs nine service containers, because
+`npm/test/db/db.test.ts` exercises every storage engine Polis supports —
+redis, mongo, mysql, mariadb, mssql, dynamodb, planetscale and cockroachdb — from
+a hardcoded list with no way to select one. We run Postgres and nothing else, so
+that job spends most of its time pulling and health-checking databases we do not
+use.
+
+We therefore keep only two services, `postgres` (the app under e2e) and
+`mocksaml`, and move `npm/test/db/db.test.ts` aside before running the tests:
+
+```yaml
+- name: Skip the multi-engine storage suite
+  run: mv npm/test/db/db.test.ts "${RUNNER_TEMP}/db.test.ts.skipped"
+```
+
+`mv` rather than a `tap --exclude` flag, because `--exclude` does not filter the
+files `npm run test` passes positionally, and spelling the tap flags out in the
+workflow would drift the moment upstream changed them. If upstream renames the
+file, this step fails loudly instead of quietly skipping nothing.
+
+What this gives up is the storage layer's own test coverage, Postgres included.
+That is upstream code we do not modify, and the Postgres path is still covered
+end to end by the e2e run, which drives the real app against Postgres.
+
+The `db:migration:run:planetscale` step and the cockroachdb `docker-compose` step
+are dropped for the same reason. No migration step replaces them: `manualMigration`
+defaults to false (`npm/src/db/sql/sql.ts`) and `DB_MANUAL_MIGRATION` is unset, so
+TypeORM synchronizes the Postgres schema on boot.
+
+`PLANETSCALE_URL`, `DYNAMODB_URL` and the `AWS_*` variables in `env` are dead now.
+They are kept so the block stays a verbatim copy of upstream's.
+
+**It publishes nothing.** There is no registry login, no `npm publish`, no image
+push and no cosign/SBOM step, and the workflow requests only `contents: read`.
+Deployment remains Cloud Build (`cloudbuild.yaml`), triggered by hand.
+
+#### Upstream's workflow
+
+`.github/workflows/main.yml` is upstream's, is **not** modified by us, and is
+deliberately absent from the file table above. It pushes images to Docker Hub and
+GHCR and publishes to npm, all gated on `refs/heads/release` and `beta-v*` tags —
+refs we never create — but it would still run its build on every push to `main`
+and twice a week on a cron.
+
+Rather than delete it and take a modify/delete conflict on every sync (18 of the
+169 commits in the last upstream sync touched it), it is switched off in the
+repository's Actions settings:
+
+```bash
+gh workflow disable "CI" --repo Preciselyco/jackson
+gh api repos/Preciselyco/jackson/actions/workflows \
+  --jq '.workflows[] | "\(.state)\t\(.path)"'   # expect disabled_manually
+```
+
+That state is held by GitHub, not by the file, so it survives upstream editing
+the workflow. It does **not** cover a _new_ workflow file arriving from upstream,
+which would be active from the moment it lands — so after an upstream sync, check
+the workflow list above and disable anything new.
 
 ## 2. `/api/precisely/**` read-only API
 

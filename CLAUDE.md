@@ -42,7 +42,14 @@ Files we add (upstream never touches them):
 - `pages/api/precisely/**` — our unauthenticated, read-only internal API for
   directory-sync and SSO data.
 - `Makefile`, `cloudbuild.yaml`, `deploy_shelob.sh` — our build and deploy.
+- `.github/workflows/precisely.yaml` — our CI. Runs every check, the build and
+  every test; publishes nothing anywhere.
 - `PRECISELY.md`, `CLAUDE.md`.
+
+Upstream's own `.github/workflows/main.yml` is left untouched and is switched off
+in the repository's Actions settings (`gh workflow disable "CI"`), so it is not
+part of our delta. If an upstream sync adds a _new_ workflow file, it arrives
+enabled — disable it too. See `PRECISELY.md`.
 
 Upstream files we modify (these are the rebase conflict points):
 
