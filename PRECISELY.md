@@ -192,6 +192,26 @@ dependency (see _Dependencies we add_ above):
   fall back to `''` when an `op: "remove"` has taken the field away — upstream
   asserts this in `test/dsync/users.test.ts`.
 
+### Extension schema URNs in no-path operations
+
+`normalizePatchOperation()` in the same file.
+
+`scim-patch` reads the keys of a **no-path** operation's value object as dotted
+attribute paths. An extension schema URN such as
+`urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` contains a dot, so
+it gets split and the attributes land under a truncated key. Entra sends the
+enterprise extension in exactly this shape:
+
+```json
+{ "op": "replace", "value": { "urn:...:enterprise:2.0:User": { "department": "Engineering" } } }
+```
+
+Before patching we rewrite URN-keyed entries of a no-path operation into
+path-based operations (`urn:...:User:department`), which `scim-patch` resolves
+correctly. Every other key is left in a single no-path operation so the merge
+semantics of a no-path operation are preserved. Path-based operations were
+already handled correctly and are passed through untouched.
+
 ### Azure manager workaround
 
 Entra ID / Azure AD sends a PATCH that sets

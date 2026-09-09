@@ -13,8 +13,42 @@ import { extractStandardUserAttributes } from './utils';
 import { sendEvent } from '../utils';
 import { isConnectionActive } from '../../controller/utils';
 import { randomUUID } from 'crypto';
-import { scimPatch, type ScimPatchOperation } from 'scim-patch';
+import { scimPatch, type ScimPatchAddReplaceOperation, type ScimPatchOperation } from 'scim-patch';
 import _ from 'lodash';
+
+// scim-patch reads the keys of a no-path operation value as dotted attribute paths,
+// which mangles extension schema URNs such as
+// `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` (Entra sends the
+// enterprise extension in exactly this shape). Rewrite those keys as path-based
+// operations, which scim-patch resolves correctly, and leave everything else alone.
+const normalizePatchOperation = (operation: ScimPatchOperation): ScimPatchOperation[] => {
+  // A remove operation always carries a path, so anything left here is add/replace.
+  if (operation.path || !_.isPlainObject(operation.value)) {
+    return [operation];
+  }
+
+  const { op, value } = operation as ScimPatchAddReplaceOperation;
+  const operations: ScimPatchAddReplaceOperation[] = [];
+  const rest: Record<string, any> = {};
+
+  for (const [key, attribute] of Object.entries(value as Record<string, any>)) {
+    if (!key.toLowerCase().startsWith('urn:')) {
+      rest[key] = attribute;
+    } else if (_.isPlainObject(attribute)) {
+      for (const [name, subAttribute] of Object.entries(attribute as Record<string, any>)) {
+        operations.push({ op, path: `${key}:${name}`, value: subAttribute });
+      }
+    } else {
+      operations.push({ op, path: key, value: attribute });
+    }
+  }
+
+  if (!_.isEmpty(rest)) {
+    operations.push({ op, value: rest });
+  }
+
+  return operations;
+};
 
 interface DirectoryUsersParams {
   directories: IDirectoryConfig;
@@ -92,7 +126,7 @@ export class DirectoryUsers {
 
     let rawAttributes: any = user.raw;
     // Loop through operations to prevent invalid patches to not break the whole patch
-    for (const op of Operations) {
+    for (const op of Operations.flatMap(normalizePatchOperation)) {
       try {
         rawAttributes = scimPatch(rawAttributes, [op]);
       } catch (e) {
