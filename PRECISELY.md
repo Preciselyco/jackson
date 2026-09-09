@@ -20,17 +20,17 @@ should always match the list below, with one exception — see _Lockfiles_ below
 
 ## Files we own or modify
 
-| File                                            | Kind     | Purpose                                          |
-| ----------------------------------------------- | -------- | ------------------------------------------------ |
-| `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide         |
-| `Makefile`                                      | added    | Manual container build and push                  |
-| `cloudbuild.yaml`                               | added    | Cloud Build pipeline                             |
-| `deploy_shelob.sh`                              | added    | Rollout call to Shelob                           |
-| `.github/workflows/precisely.yaml`              | added    | Our CI — checks, build and tests, pushes nothing |
-| `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API    |
-| `proxy.ts`                                      | modified | Exempts `/api/precisely/**` from authentication  |
-| `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`        |
-| `npm/package.json`                              | modified | Declares the dependencies we add (see below)     |
+| File                                            | Kind     | Purpose                                         |
+| ----------------------------------------------- | -------- | ----------------------------------------------- |
+| `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide        |
+| `Makefile`                                      | added    | Manual container build and push                 |
+| `cloudbuild.yaml`                               | added    | Cloud Build pipeline                            |
+| `deploy_shelob.sh`                              | added    | Rollout call to Shelob                          |
+| `.github/workflows/precisely.yaml`              | added    | Our CI — checks, tests, and the image push      |
+| `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API   |
+| `proxy.ts`                                      | modified | Exempts `/api/precisely/**` from authentication |
+| `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`       |
+| `npm/package.json`                              | modified | Declares the dependencies we add (see below)    |
 
 ## Dependencies we add
 
@@ -108,8 +108,75 @@ and on `workflow_dispatch`. Two jobs:
   `npm run build`, the `npm/` library tests, and the Playwright e2e suite against
   `mock-saml`. The `env` block is copied verbatim from upstream's `ci` job, so it
   should be re-copied if upstream changes it.
-- **`image`** — builds the `Dockerfile` with `push: false`, purely to catch a
-  Dockerfile that stopped building after an upstream sync.
+- **`image`** — builds the `Dockerfile`, and on a merge to `precisely` pushes it
+  to our Artifact Registry. On a pull request it builds and stops, which is what
+  catches a Dockerfile broken by an upstream sync.
+
+#### The image push
+
+Same image, same registry, same method as `cloudbuild.yaml`:
+
+```
+europe-west3-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh
+```
+
+The `-gh` suffix is the one difference. Cloud Build publishes the bare
+`$SHORT_SHA` for a commit; a GitHub Actions merge build publishes
+`$SHORT_SHA-gh`, so the two pipelines can build the same commit without
+overwriting each other and it is always clear which produced an image. This
+mirrors what `email-service` does.
+
+Registry auth is Workload Identity Federation, not a service account key. **This
+repository is public** — it is our fork of `ory/polis`, and GitHub does not allow
+a fork of a public repository to be made private — so a long-lived key stored
+here would be one careless step away from a world-readable log or artifact, and
+would stay valid until somebody rotated it. A federated token lasts minutes and
+is only ever issued to a workflow run in this repository.
+
+Neither value in the workflow is a secret, so both are written out rather than
+kept in an org secret:
+
+|                              |                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `workload_identity_provider` | `projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions` |
+| `service_account`            | `github-actions-jackson@precisely-production.iam.gserviceaccount.com`                                  |
+
+Both are managed in the `iap` repo, `gcp-github` (Pulumi stack `production`), and
+are its `workloadIdentityProvider` and `jacksonServiceAccountEmail` outputs. The
+pool and provider are shared with the other Precisely repositories; the service
+account is not. It exists only to push this image and holds
+`roles/artifactregistry.writer` on the single `services` Artifact Registry
+repository — no project-level roles at all.
+
+That separation is deliberate. The shared `github-actions` service account also
+holds `roles/container.developer` and `roles/storage.admin`, so binding a public
+repository to it would let anything running on `precisely` deploy to our clusters
+and read or delete any bucket in the project.
+
+`permissions: id-token: write` is what lets the run mint the OIDC token; it grants
+no access to this repository.
+
+It is a plain `docker build` / `docker push` rather than `docker/build-push-action`
+on purpose. BuildKit's default provenance and SBOM attestations publish an OCI
+index, where `cloudbuild.yaml` publishes a plain image manifest, and both push to
+the same repository. `email-service`'s `ci.yml` avoids it for the same reason. The
+cost is losing the cross-run buildx cache, which is worth roughly 2½ minutes on
+the image job.
+
+The image is built **before** the `gcloud` steps run, and that ordering is load
+bearing. `google-github-actions/auth` writes its credentials to
+`gha-creds-*.json` in `$GITHUB_WORKSPACE`, `Dockerfile` line 39 is `COPY . .`,
+and upstream's `.dockerignore` does not exclude it — so authenticating first
+would carry the service account key into the build context. This repository is
+**public**, so that key must never reach a layer. Building first costs nothing
+(the base images are public) and avoids editing an upstream file. If the build
+ever has to move after the auth, add `gha-creds-*.json` to `.dockerignore` in the
+same change.
+
+**Nothing here deploys.** The push is where this workflow stops: `deploy_shelob.sh`
+is never called from it, and rolling an image out to a cluster stays a deliberate,
+separate act. The pushed digest is written to the job summary so it can be handed
+to a deploy.
 
 #### Postgres only
 
@@ -145,8 +212,9 @@ TypeORM synchronizes the Postgres schema on boot.
 `PLANETSCALE_URL`, `DYNAMODB_URL` and the `AWS_*` variables in `env` are dead now.
 They are kept so the block stays a verbatim copy of upstream's.
 
-**It publishes nothing.** There is no registry login, no `npm publish`, no image
-push and no cosign/SBOM step, and the workflow requests only `contents: read`.
+**It publishes nothing upstream.** There is no `npm publish`, no Docker Hub or
+GHCR login and no cosign/SBOM step; the only registry it touches is our own
+Artifact Registry, and the workflow requests only `contents: read`.
 Deployment remains Cloud Build (`cloudbuild.yaml`), triggered by hand.
 
 #### Upstream's workflow

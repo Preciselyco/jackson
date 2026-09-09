@@ -43,7 +43,9 @@ Files we add (upstream never touches them):
   directory-sync and SSO data.
 - `Makefile`, `cloudbuild.yaml`, `deploy_shelob.sh` — our build and deploy.
 - `.github/workflows/precisely.yaml` — our CI. Runs every check, the build and
-  every test; publishes nothing anywhere.
+  every test, and on a merge to `precisely` pushes the container to our Artifact
+  Registry as `jackson:<short sha>-gh`. It never deploys — `deploy_shelob.sh` is
+  not called from it.
 - `PRECISELY.md`, `CLAUDE.md`.
 
 Upstream's own `.github/workflows/main.yml` is left untouched and is switched off

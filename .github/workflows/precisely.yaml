@@ -3,12 +3,14 @@
 # Upstream's own workflow (.github/workflows/main.yml) is left untouched but is
 # disabled in the repository's Actions settings, because it builds and publishes
 # artifacts to BoxyHQ/Ory's registries. This workflow is the Precisely
-# replacement: it runs every check and build upstream runs, and pushes nothing
-# anywhere. There is deliberately no registry login, no npm publish, no image
-# push and no signing step here — see PRECISELY.md.
+# replacement: it runs every check and build upstream runs, and on a merge to
+# `precisely` pushes the container to our own Artifact Registry. It publishes
+# nothing to BoxyHQ/Ory: no npm publish, no Docker Hub or GHCR login, no signing
+# step — see PRECISELY.md.
 #
-# Deployment stays where it has always been: cloudbuild.yaml (Cloud Build), which
-# is triggered manually, not from GitHub Actions.
+# It builds and pushes the image the way cloudbuild.yaml does, but stops there.
+# Rolling the image out to a cluster stays a deliberate act: deploy_shelob.sh is
+# never called from here.
 
 name: Precisely CI
 
@@ -21,9 +23,12 @@ on:
       - precisely
   workflow_dispatch:
 
-# Read-only. This workflow must never need write access to anything.
+# contents: read is all the checkout needs. id-token: write mints the short-lived
+# OIDC token Workload Identity Federation exchanges for GCP credentials; it grants
+# no access to this repository.
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   ci:
@@ -140,27 +145,108 @@ jobs:
           retention-days: 2
 
   image:
-    name: Container image builds
+    name: Container image
     needs: ci
     runs-on: ubuntu-latest
     steps:
       - name: Check Out Repo
         uses: actions/checkout@v6
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      # A pull_request event stamps the merge commit rather than the commit
+      # under review, so take the head sha there. The `-gh` suffix keeps this
+      # tag clear of the bare $SHORT_SHA that cloudbuild.yaml publishes for the
+      # same commit, so the two pipelines can never overwrite each other.
+      - name: Set build vars
+        id: vars
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            commit_sha="$PR_HEAD_SHA"
+          else
+            commit_sha="$GITHUB_SHA"
+          fi
+          short_sha=$(echo "$commit_sha" | cut -c 1-7)
+          tag="${short_sha}-gh"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=europe-west3-docker.pkg.dev/precisely-production/services/jackson:$tag" >> "$GITHUB_ENV"
 
-      # Build only: this proves the Dockerfile still builds after an upstream
-      # sync. The real image we deploy is built and pushed by Cloud Build.
-      # There is no registry login in this job, so it cannot push even if
-      # `push` were flipped by accident.
-      - name: Build image (no push)
-        uses: docker/build-push-action@v7
+      # GCP_SA_KEY_JSON is an organisation secret. Fail with something readable
+      # rather than letting google-github-actions/auth report an empty
+      # credential, which is what an org secret not granted to this repository
+      # looks like from in here.
+      # Built before the gcloud steps on purpose. google-github-actions/auth
+      # writes gha-creds-*.json into $GITHUB_WORKSPACE, Dockerfile line 39 is
+      # `COPY . .`, and upstream's .dockerignore does not exclude it. Under
+      # Workload Identity Federation that file is an external account config
+      # rather than a key — it holds no long-lived secret and is useless without
+      # a GitHub OIDC token for this repository — but no credential material
+      # belongs in the build context of a public repository's image. Building
+      # first needs no credentials (the base images are public) and keeps the
+      # ordering safe without editing upstream's .dockerignore.
+      #
+      # Plain docker build, not build-push-action: buildkit's default
+      # provenance/SBOM attestations would publish an OCI index where
+      # cloudbuild.yaml publishes a plain image manifest, and both pipelines
+      # push to the same repository. This is the same reasoning as
+      # email-service's ci.yml. On a pull request the build still runs, which is
+      # what catches a Dockerfile broken by an upstream sync; only the push is
+      # skipped.
+      - name: Build container
+        env:
+          DOCKER_BUILDKIT: '1'
+        run: |
+          docker build -f Dockerfile -t "$IMAGE" .
+
+      # Workload Identity Federation, not a service account key. This repository
+      # is public, so a long-lived key stored here would be one careless step
+      # away from a world-readable log or artifact; a federated token lasts
+      # minutes and is only issued to a workflow run in this repository.
+      #
+      # Neither value below is a secret, so they are written out rather than
+      # hidden in an org secret this repository may or may not be granted.
+      # Both come from ../iap/gcp-github (pulumi stack `production`): the
+      # provider is the shared `workloadIdentityProvider` output, the account is
+      # `jacksonServiceAccountEmail`. That account exists only to push this
+      # image — it holds artifactregistry.writer on the `services` repository
+      # and nothing else.
+      - name: gcloud auth
+        if: github.event_name == 'push'
+        uses: google-github-actions/auth@v2
         with:
-          context: ./
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: false
-          tags: jackson:ci-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          workload_identity_provider: projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions
+          service_account: github-actions-jackson@precisely-production.iam.gserviceaccount.com
+
+      - name: gcloud setup
+        if: github.event_name == 'push'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          version: '431.0.0'
+
+      - name: gcloud docker config
+        if: github.event_name == 'push'
+        run: |
+          gcloud --quiet auth configure-docker europe-west3-docker.pkg.dev
+
+      # The digest is recorded because that is what a deploy would be pinned to.
+      # Nothing here deploys: rolling this image out is a separate, deliberate
+      # act, and deploy_shelob.sh is not called from this workflow.
+      - name: Push container
+        id: push
+        if: github.event_name == 'push'
+        run: |
+          docker push "$IMAGE"
+          digest=$(docker inspect --format='{{join .RepoDigests "\n"}}' "$IMAGE" \
+            | head -n1 | cut -d@ -f2 | cut -d: -f2)
+          if [ -z "$digest" ]; then
+            echo "::error::could not resolve image digest after push"
+            exit 1
+          fi
+          echo "pushed $IMAGE @ sha256:$digest"
+          {
+            echo "### Image pushed"
+            echo ""
+            echo "\`$IMAGE\`"
+            echo ""
+            echo "digest \`sha256:$digest\`  —  not deployed; roll out separately"
+          } >> "$GITHUB_STEP_SUMMARY"
