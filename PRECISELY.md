@@ -24,7 +24,6 @@ should always match the list below, with one exception — see _Lockfiles_ below
 | ----------------------------------------------- | -------- | ----------------------------------------------- |
 | `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide        |
 | `Makefile`                                      | added    | Manual container build and push                 |
-| `cloudbuild.yaml`                               | added    | Cloud Build pipeline                            |
 | `deploy_shelob.sh`                              | added    | Rollout call to Shelob                          |
 | `.github/workflows/precisely.yaml`              | added    | Our CI — checks, tests, and the image push      |
 | `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API   |
@@ -78,23 +77,19 @@ make docker-push
 
 Image name: `europe-west3-docker.pkg.dev/precisely-production/services/jackson`.
 
-### `cloudbuild.yaml` + `deploy_shelob.sh`
+### `deploy_shelob.sh`
 
-Google Cloud Build pipeline:
+The manual rollout. With the Shelob secret in `.shelob`, run
+`deploy_shelob.sh <cluster> jackson <short sha>-gh provisioning`; it POSTs
+`{deployment, tag, namespace}` to Shelob to roll out that image.
 
-1. Read `SHELOB_SECRET_HEADER` from Secret Manager into `.shelob`.
-2. `docker build` and push
-   `europe-west3-docker.pkg.dev/precisely-production/services/jackson:$SHORT_SHA`.
-3. Run `deploy_shelob.sh $_CLUSTER jackson $SHORT_SHA provisioning`, which POSTs
-   `{deployment, tag, namespace}` to Shelob to roll out the new image.
-
-Substitutions used:
-
-- `_CLUSTER` — `staging` selects `shelob.stg.precisely.se`, anything else
+- `<cluster>` — `staging` selects `shelob.stg.precisely.se`, anything else
   selects `shelob.precisely.se`.
-- `_SHELOB_TARGETS` — optional, space-separated list of Shelob hosts. When set,
-  it overrides the `_CLUSTER`-derived host and the script posts to every target,
-  failing if any of them fails.
+- `SHELOB_TARGETS` — optional environment variable, a space-separated list of
+  Shelob hosts. When set, it overrides the cluster-derived host and the script
+  posts to every target, failing if any of them fails.
+
+Cloud Build and `cloudbuild.yaml` are retired.
 
 The deployment always targets the `jackson` deployment in the `provisioning`
 namespace.
@@ -114,17 +109,11 @@ and on `workflow_dispatch`. Two jobs:
 
 #### The image push
 
-Same image, same registry, same method as `cloudbuild.yaml`:
-
 ```
 europe-west3-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh
 ```
 
-The `-gh` suffix is the one difference. Cloud Build publishes the bare
-`$SHORT_SHA` for a commit; a GitHub Actions merge build publishes
-`$SHORT_SHA-gh`, so the two pipelines can build the same commit without
-overwriting each other and it is always clear which produced an image. This
-mirrors what `email-service` does.
+`<short sha>-gh` is the release tag every service uses.
 
 Registry auth is Workload Identity Federation, not a service account key. **This
 repository is public** — it is our fork of `ory/polis`, and GitHub does not allow
@@ -153,25 +142,22 @@ holds `roles/container.developer` and `roles/storage.admin`, so binding a public
 repository to it would let anything running on `precisely` deploy to our clusters
 and read or delete any bucket in the project.
 
-`permissions: id-token: write` is what lets the run mint the OIDC token; it grants
-no access to this repository.
+Only the image job asks for `id-token: write`, which is what lets it mint the
+OIDC token; it grants no access to this repository. The auth step hands docker an
+access token directly, so there is no gcloud and no credentials file.
 
 It is a plain `docker build` / `docker push` rather than `docker/build-push-action`
 on purpose. BuildKit's default provenance and SBOM attestations publish an OCI
-index, where `cloudbuild.yaml` publishes a plain image manifest, and both push to
-the same repository. `email-service`'s `ci.yml` avoids it for the same reason. The
+index, where the clusters and Shelob expect a plain image manifest. The
 cost is losing the cross-run buildx cache, which is worth roughly 2½ minutes on
 the image job.
 
-The image is built **before** the `gcloud` steps run, and that ordering is load
-bearing. `google-github-actions/auth` writes its credentials to
-`gha-creds-*.json` in `$GITHUB_WORKSPACE`, `Dockerfile` line 39 is `COPY . .`,
-and upstream's `.dockerignore` does not exclude it — so authenticating first
-would carry the service account key into the build context. This repository is
-**public**, so that key must never reach a layer. Building first costs nothing
-(the base images are public) and avoids editing an upstream file. If the build
-ever has to move after the auth, add `gha-creds-*.json` to `.dockerignore` in the
-same change.
+The image is built **before** authenticating, and `Dockerfile` line 39 is
+`COPY . .`, so nothing credential-shaped may be in the workspace when it runs.
+This repository is **public**. Three things keep it that way: the build runs
+first; the auth step writes no credentials file (`create_credentials_file:
+false`); and both checkouts set `persist-credentials: false`, so the job token is
+not in `.git/config` either.
 
 **Nothing here deploys.** The push is where this workflow stops: `deploy_shelob.sh`
 is never called from it, and rolling an image out to a cluster stays a deliberate,
@@ -214,8 +200,7 @@ They are kept so the block stays a verbatim copy of upstream's.
 
 **It publishes nothing upstream.** There is no `npm publish`, no Docker Hub or
 GHCR login and no cosign/SBOM step; the only registry it touches is our own
-Artifact Registry, and the workflow requests only `contents: read`.
-Deployment remains Cloud Build (`cloudbuild.yaml`), triggered by hand.
+Artifact Registry. Rollout is `deploy_shelob.sh`, run by hand.
 
 #### Upstream's workflow
 
@@ -226,8 +211,11 @@ refs we never create — but it would still run its build on every push to `main
 and twice a week on a cron.
 
 Rather than delete it and take a modify/delete conflict on every sync (18 of the
-169 commits in the last upstream sync touched it), it is switched off in the
-repository's Actions settings:
+169 commits in the last upstream sync touched it), it is left switched off.
+
+It is off today only because workflows in a fork start disabled: GitHub reports
+it as `disabled_fork`, not `disabled_manually`. To make it hold even if Actions
+are enabled for the fork, disable it explicitly:
 
 ```bash
 gh workflow disable "CI" --repo Preciselyco/jackson
