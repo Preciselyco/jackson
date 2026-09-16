@@ -8,7 +8,7 @@
 # nothing to BoxyHQ/Ory: no npm publish, no Docker Hub or GHCR login, no signing
 # step — see PRECISELY.md.
 #
-# It builds and pushes the image the way cloudbuild.yaml does, but stops there.
+# It builds and pushes the image, but stops there.
 # Rolling the image out to a cluster stays a deliberate act: deploy_shelob.sh is
 # never called from here.
 
@@ -23,12 +23,12 @@ on:
       - precisely
   workflow_dispatch:
 
-# contents: read is all the checkout needs. id-token: write mints the short-lived
-# OIDC token Workload Identity Federation exchanges for GCP credentials; it grants
-# no access to this repository.
+# contents: read is all the checkout needs. The image job alone also asks for
+# id-token: write, which mints the short-lived OIDC token Workload Identity
+# Federation exchanges for GCP credentials; the checks and tests have no use for
+# it.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   ci:
@@ -84,10 +84,12 @@ jobs:
           PRIVATE_KEY: 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2d0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktrd2dnU2xBZ0VBQW9JQkFRRE0yUzJaUDNnRUt0WUsKWDduYmF5RnJmeTZPbVJkYU1zOFRqamxwWDhFUmxZVGxISndOS0llU1pWcmcvRGV3d3Q5bkk3ZkE4THMwS1gxYQpvdU4xelZjVEpaOWphREVVU09WM0FXVjloWS8zNzgyaTU0RVNPWHcrMTVSZzRqNnlodkhsUm4vMHROMjdsU29MCmx0V1NWay95M29QWStaRmlyYW1OT0pMT1NnenFCK3dUWVhGNHF1aG4xOHpSUHdMVnp5V21ydlRFUTUySzFmMDIKQitBZ0JvVWEwZ0xDVVBUYkdxeEdlaWU1a1Zla3pkZVRpU240aDhVRUF6Tlc2RFJkN2t0Q1FKN0tacVNCaXczZwppN0x3aGl5OXNXcWs2MWx1YU5zcEdTNVc1eVBKL0psYWFUNDVPdENKVTFObWRzaktHUHhId3pnYWdkQ0lESkZPCjhQVHlGbnBEQWdNQkFBRUNnZ0VBQ0NPbytDblpidkQweUR5OWVjWnI4WVdBS0JKVkp6UlZuZ1ZNcXE4dlVLK00KTkQ1S3hRc1ROL0huQm9GL0JQcjVQWFBoM1R5emM0TWlnL05zN2tWV2JHQldVUERXNG1OekdxTm5rUEU1b3pSWQpDMXovZCtYbzFlWmk4dWFLYnpXRmJ3SzZHdE1FN0dzazNJa0Z1MmJLam0vZzlVSVZVTUp0dGpyRk9vVWV0ajNBCkpFWU5TZFplWFA2Z0RXeitlR0F6V2RXRnlNZ1hHT0hCanVMekt1S3kwb2xQaUFHRTJIMlhicHlCSEk2K09taHUKemU4VEhYSUg0YW1TOTdaN0ZlWTdZaDZPV0xoeVByaVh3VGZjNk1NaktubUdWOWQ3RytVanIyS3NVNGtYMG1MRApQKzhsS1NqVnFvUjF2YUswWEJiV0Fnd0kwbVd4TjhQMFZqSzRjMzJUNFFLQmdRRG9wZUJ6cE1xVjFlY24ydkFzCnkvRW5JeXdMcUlBVUZuRXRsRnlnMkVOM2ZZMDRkUTBqOWNzM0ZqbXNQK3grYjA1U2pJK05vVVQzRUowNC96Uk8KMFcvcmc0cEVTUlNDOHRtelliUGkycktrc2xLSDhmUWd2YzZKV1FVUThsWWx2elh6OTZiTFlxeFNtK0EwZ1Z4QQpEc2JNQk5NZDEzdk5Wa1VjTURsMnNveTNMUUtCZ1FEaGFQWnF4QzRxSVB1TlhOZE5EbExRVGZIWGxFMzRRTXVaCnNiM3J1NVdwbkJOdWpCU0xHREV2a0pvckprcUZ1b3VYUnVOOGIrd3BObi9lc0c3TjZyM3o5bHltRkI1VE1Ba3kKTlBPR0dDNWdqOU0wVytGTmw4M2dIVkN6eVgxa3VyR2t1amVHM1F1b2RoYXZBaWpqUzdnNW5Nb1J3OEpwcitUdwp4NEtKMC92ZEx3S0JnUURBSjVHMXNweXBHVjJ0YTRZSVdnSTZvekJVQ0w2UTJPQnVGeVpTcTQwOStuTlQrRW44Ck01Mi9TQm9talQzV1NEVFd0Y1l6NHNuRmp2RnRERXkxOVFLTjhiMllIUXhXQkNPUHA5a2VQQ2hsSSt4SzRLc1YKQi9DNVBNK1VhYlNCeE9iWk5PbU0vMWo1ZWttNjFFWFBtdVRUeWdCZG00ZGoyQ2VJMnNQN3FBblZtUUtCZ1FDZgp0T0N5OE9ETWxLWG1tTnNyQzNUOWhkeE9KQlBDU3haMmhRck5WUkZMSlB4WG5RU0pNTkRZcEptMjdPQnNNNm5uCnV5QSs4SVhoQlc0Lzk3M3FRK0htVXExK05rN3VIZURHSStKUEpoN2w1OEY3SFlaYWxhNFdsbTZ4azVjMm9WaHcKSUVoclUzNkpFM0lxK1ZyREFNazhlS3hyUGNvblc2cllObU4xQ0M4eG5RS0JnUURiOGZTeDBQcHg1WisxL2tCMwpxVGc2RDJYY1YyZGVWNFdsOS9JQ2owRHFqaGpXekJjaThuTjUyb3ZoSmVXcFVxWnJ1eStVWTg2cVRuK09oNGVJClNkZFRBb0F2cU1sL2gzVzdCRUdad2NsclRJSWRqTHVmK0FuRGN5S0lKY21CUG9JZGsydzZ4dkNWczJqbmdEOTMKcjZ0R3VoNHlvM2pIRkRTR0Y3dDdCRk5RSEE9PQotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg=='
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -97,7 +99,7 @@ jobs:
       - run: npm -v
 
       - name: Setup Next.js cache
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.npm
@@ -137,7 +139,7 @@ jobs:
         run: npx ts-node --log-error e2e/support/pretest.ts && npx playwright test -x
 
       - name: Upload e2e trace
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: playwright-report
@@ -148,14 +150,21 @@ jobs:
     name: Container image
     needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
+      # persist-credentials: false matters more here than anywhere: the build is
+      # COPY . . in a public repository's image, and the token must not be in
+      # .git/config when it runs.
       - name: Check Out Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # A pull_request event stamps the merge commit rather than the commit
-      # under review, so take the head sha there. The `-gh` suffix keeps this
-      # tag clear of the bare $SHORT_SHA that cloudbuild.yaml publishes for the
-      # same commit, so the two pipelines can never overwrite each other.
+      # under review, so take the head sha there. <short sha>-gh is the release
+      # tag every service uses.
       - name: Set build vars
         id: vars
         env:
@@ -171,27 +180,18 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "IMAGE=europe-west3-docker.pkg.dev/precisely-production/services/jackson:$tag" >> "$GITHUB_ENV"
 
-      # GCP_SA_KEY_JSON is an organisation secret. Fail with something readable
-      # rather than letting google-github-actions/auth report an empty
-      # credential, which is what an org secret not granted to this repository
-      # looks like from in here.
-      # Built before the gcloud steps on purpose. google-github-actions/auth
-      # writes gha-creds-*.json into $GITHUB_WORKSPACE, Dockerfile line 39 is
-      # `COPY . .`, and upstream's .dockerignore does not exclude it. Under
-      # Workload Identity Federation that file is an external account config
-      # rather than a key — it holds no long-lived secret and is useless without
-      # a GitHub OIDC token for this repository — but no credential material
-      # belongs in the build context of a public repository's image. Building
-      # first needs no credentials (the base images are public) and keeps the
-      # ordering safe without editing upstream's .dockerignore.
+      # Built before authenticating on purpose: Dockerfile line 39 is `COPY . .`,
+      # and no credential material belongs in the build context of a public
+      # repository's image. Building first needs no credentials (the base images
+      # are public). The auth step below also writes no credentials file, and the
+      # checkout does not persist its token, so the ordering is a second line of
+      # defence rather than the only one.
       #
       # Plain docker build, not build-push-action: buildkit's default
-      # provenance/SBOM attestations would publish an OCI index where
-      # cloudbuild.yaml publishes a plain image manifest, and both pipelines
-      # push to the same repository. This is the same reasoning as
-      # email-service's ci.yml. On a pull request the build still runs, which is
-      # what catches a Dockerfile broken by an upstream sync; only the push is
-      # skipped.
+      # provenance/SBOM attestations would publish an OCI index where the
+      # clusters and Shelob expect a plain image manifest. On a pull request the
+      # build still runs, which is what catches a Dockerfile broken by an
+      # upstream sync; only the push is skipped.
       - name: Build container
         env:
           DOCKER_BUILDKIT: '1'
@@ -210,23 +210,29 @@ jobs:
       # `jacksonServiceAccountEmail`. That account exists only to push this
       # image — it holds artifactregistry.writer on the `services` repository
       # and nothing else.
+      #
+      # An access token straight into docker login rather than gcloud: nothing
+      # else here needs gcloud, and it drops the pinned SDK version. This is the
+      # same thing Preciselyco/actions/gcp-auth does, written out because a public
+      # repository cannot use actions from a private one.
       - name: gcloud auth
+        id: auth
         if: github.event_name == 'push'
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions
           service_account: github-actions-jackson@precisely-production.iam.gserviceaccount.com
+          token_format: access_token
+          # No credentials file in the workspace of a public repository's build.
+          create_credentials_file: false
 
-      - name: gcloud setup
+      - name: docker login
         if: github.event_name == 'push'
-        uses: google-github-actions/setup-gcloud@v2
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          version: '431.0.0'
-
-      - name: gcloud docker config
-        if: github.event_name == 'push'
-        run: |
-          gcloud --quiet auth configure-docker europe-west3-docker.pkg.dev
+          registry: europe-west3-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
 
       # The digest is recorded because that is what a deploy would be pinned to.
       # Nothing here deploys: rolling this image out is a separate, deliberate

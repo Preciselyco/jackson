@@ -41,7 +41,7 @@ Files we add (upstream never touches them):
 
 - `pages/api/precisely/**` — our unauthenticated, read-only internal API for
   directory-sync and SSO data.
-- `Makefile`, `cloudbuild.yaml`, `deploy_shelob.sh` — our build and deploy.
+- `Makefile`, `deploy_shelob.sh` — manual build/push and rollout.
 - `.github/workflows/precisely.yaml` — our CI. Runs every check, the build and
   every test, and on a merge to `precisely` pushes the container to our Artifact
   Registry as `jackson:<short sha>-gh`. It never deploys — `deploy_shelob.sh` is
@@ -112,11 +112,12 @@ Run `check-types`, `check-lint` and `check-format` before committing. Touching
 
 ## Deployment
 
-Cloud Build (`cloudbuild.yaml`) builds
-`europe-west3-docker.pkg.dev/precisely-production/services/jackson:$SHORT_SHA`
-and calls Shelob to roll out the `jackson` deployment in the `provisioning`
-namespace. `make docker-push` does the same build/push by hand. See
-`PRECISELY.md` for the substitutions.
+A merge to `precisely` builds and pushes
+`europe-west3-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh`
+through `.github/workflows/precisely.yaml`. Nothing deploys it automatically:
+rolling it out to the `jackson` deployment in the `provisioning` namespace is a
+deliberate `deploy_shelob.sh` call by hand. `make docker-push` builds and pushes
+by hand. Cloud Build is retired. See `PRECISELY.md`.
 
 ## Conventions
 
