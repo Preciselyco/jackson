@@ -1,4 +1,4 @@
-name:=europe-west3-docker.pkg.dev/precisely-production/services/jackson
+name:=europe-docker.pkg.dev/precisely-production/services/jackson
 tag:=$(shell git describe --always)
 
 default: docker
