@@ -46,9 +46,11 @@ Files we add (upstream never touches them):
 - `e2e/precisely/` — e2e tests for that API's authentication and handlers.
 - `Makefile`, `deploy_shelob.sh` — manual build/push and rollout.
 - `.github/workflows/precisely.yaml` — our CI. Runs every check, the build and
-  every test, and on a merge to `precisely` pushes the container to our Artifact
-  Registry as `jackson:<short sha>-gh`. It never deploys — `deploy_shelob.sh` is
-  not called from it.
+  every test, and pushes the container to our Artifact Registry as
+  `jackson:<short sha>-gh`: to `services` on a merge to `precisely`, to
+  `services-pr` for a pull request from a branch of this repository (fork pull
+  requests only build). It never deploys — `deploy_shelob.sh` is not called from
+  it.
 - `PRECISELY.md`, `CLAUDE.md`.
 
 Upstream's own `.github/workflows/main.yml` is left untouched and is switched off
@@ -117,10 +119,15 @@ Run `check-types`, `check-lint` and `check-format` before committing. Touching
 ## Deployment
 
 A merge to `precisely` builds and pushes
-`europe-west3-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh`
+`europe-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh`
 through `.github/workflows/precisely.yaml`. Nothing deploys it automatically:
 rolling it out to the `jackson` deployment in the `provisioning` namespace is a
-deliberate `deploy_shelob.sh` call by hand. `make docker-push` builds and pushes
+deliberate `deploy_shelob.sh` call by hand.
+
+A pull request from a branch of this repository pushes
+`europe-docker.pkg.dev/precisely-production/services-pr/jackson:<short sha>-gh`
+(head commit's sha). That image is for staging only, deployed by hand with
+`IMAGE_REPOSITORY=services-pr ./deploy_shelob.sh staging jackson <short sha>-gh provisioning`. `make docker-push` builds and pushes
 by hand. Cloud Build is retired. See `PRECISELY.md`.
 
 ## Conventions

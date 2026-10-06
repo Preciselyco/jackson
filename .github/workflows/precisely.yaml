@@ -3,10 +3,13 @@
 # Upstream's own workflow (.github/workflows/main.yml) is left untouched but is
 # disabled in the repository's Actions settings, because it builds and publishes
 # artifacts to BoxyHQ/Ory's registries. This workflow is the Precisely
-# replacement: it runs every check and build upstream runs, and on a merge to
-# `precisely` pushes the container to our own Artifact Registry. It publishes
-# nothing to BoxyHQ/Ory: no npm publish, no Docker Hub or GHCR login, no signing
-# step — see PRECISELY.md.
+# replacement: it runs every check and build upstream runs, and pushes the
+# container to our own Artifact Registry: on a merge to `precisely` to the
+# `services` repository, and for a pull request from a branch of this repository
+# to `services-pr`, so the change can be deployed to staging by hand. A pull
+# request from a fork builds the image but never authenticates or pushes. It
+# publishes nothing to BoxyHQ/Ory: no npm publish, no Docker Hub or GHCR login,
+# no signing step — see PRECISELY.md.
 #
 # It builds and pushes the image, but stops there.
 # Rolling the image out to a cluster stays a deliberate act: deploy_shelob.sh is
@@ -165,20 +168,37 @@ jobs:
       # A pull_request event stamps the merge commit rather than the commit
       # under review, so take the head sha there. <short sha>-gh is the release
       # tag every service uses.
+      #
+      # push_repo decides where, if anywhere, the image goes, and is the one
+      # condition the auth, login and push steps below test:
+      #   services     a push to `precisely`, i.e. a merge — the release image
+      #   services-pr  a pull request from a branch of this repository
+      #   (empty)      anything else, fork pull requests included: build only
+      # A fork's pull request runs without access to this repository's
+      # identity, so it must never reach the auth step.
       - name: Set build vars
         id: vars
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
+          push_repo=""
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             commit_sha="$PR_HEAD_SHA"
+            if [ "$PR_HEAD_REPO" = "$GITHUB_REPOSITORY" ]; then
+              push_repo="services-pr"
+            fi
           else
             commit_sha="$GITHUB_SHA"
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/precisely" ]; then
+              push_repo="services"
+            fi
           fi
           short_sha=$(echo "$commit_sha" | cut -c 1-7)
           tag="${short_sha}-gh"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "IMAGE=europe-docker.pkg.dev/precisely-production/services/jackson:$tag" >> "$GITHUB_ENV"
+          echo "push_repo=$push_repo" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=europe-docker.pkg.dev/precisely-production/${push_repo:-services}/jackson:$tag" >> "$GITHUB_ENV"
 
       # Built before authenticating on purpose: Dockerfile line 39 is `COPY . .`,
       # and no credential material belongs in the build context of a public
@@ -189,9 +209,9 @@ jobs:
       #
       # Plain docker build, not build-push-action: buildkit's default
       # provenance/SBOM attestations would publish an OCI index where the
-      # clusters and Shelob expect a plain image manifest. On a pull request the
-      # build still runs, which is what catches a Dockerfile broken by an
-      # upstream sync; only the push is skipped.
+      # clusters and Shelob expect a plain image manifest. The build runs on
+      # every event, which is what catches a Dockerfile broken by an upstream
+      # sync; only the push depends on push_repo.
       - name: Build container
         env:
           DOCKER_BUILDKIT: '1'
@@ -208,8 +228,8 @@ jobs:
       # Both come from ../iap/gcp-github (pulumi stack `production`): the
       # provider is the shared `workloadIdentityProvider` output, the account is
       # `jacksonServiceAccountEmail`. That account exists only to push this
-      # image — it holds artifactregistry.writer on the `services` repository
-      # and nothing else.
+      # image — it holds artifactregistry.writer on the `services` and
+      # `services-pr` repositories and nothing else.
       #
       # An access token straight into docker login rather than gcloud: nothing
       # else here needs gcloud, and it drops the pinned SDK version. This is the
@@ -217,7 +237,7 @@ jobs:
       # repository cannot use actions from a private one.
       - name: gcloud auth
         id: auth
-        if: github.event_name == 'push'
+        if: steps.vars.outputs.push_repo != ''
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions
@@ -227,7 +247,7 @@ jobs:
           create_credentials_file: false
 
       - name: docker login
-        if: github.event_name == 'push'
+        if: steps.vars.outputs.push_repo != ''
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: europe-docker.pkg.dev
@@ -236,10 +256,11 @@ jobs:
 
       # The digest is recorded because that is what a deploy would be pinned to.
       # Nothing here deploys: rolling this image out is a separate, deliberate
-      # act, and deploy_shelob.sh is not called from this workflow.
+      # act, and deploy_shelob.sh is not called from this workflow. A
+      # `services-pr` image is for staging only — see PRECISELY.md.
       - name: Push container
         id: push
-        if: github.event_name == 'push'
+        if: steps.vars.outputs.push_repo != ''
         run: |
           docker push "$IMAGE"
           digest=$(docker inspect --format='{{join .RepoDigests "\n"}}' "$IMAGE" \
