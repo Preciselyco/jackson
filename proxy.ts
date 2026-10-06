@@ -20,7 +20,6 @@ const unAuthenticatedApiRoutes = [
   '/api/setup/**',
   '/api/branding',
   '/api/error',
-  '/api/precisely/**',
 ];
 
 export async function proxy(req: NextRequest) {
@@ -46,7 +45,7 @@ export async function proxy(req: NextRequest) {
   }
 
   // Validate API routes `/api/v1/**`
-  if (micromatch.isMatch(pathname, ['/api/v1/**', '/api/internals/**'])) {
+  if (micromatch.isMatch(pathname, ['/api/v1/**', '/api/internals/**', '/api/precisely/**'])) {
     if (!validateApiKey(extractAuthToken(req))) {
       return sendUnAuthorizedResponse({ message: 'Unauthorized' });
     }
