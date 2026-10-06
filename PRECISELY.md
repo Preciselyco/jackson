@@ -27,7 +27,9 @@ should always match the list below, with one exception — see _Lockfiles_ below
 | `deploy_shelob.sh`                              | added    | Rollout call to Shelob                          |
 | `.github/workflows/precisely.yaml`              | added    | Our CI — checks, tests, and the image push      |
 | `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API   |
-| `proxy.ts`                                      | modified | Exempts `/api/precisely/**` from authentication |
+| `lib/precisely.ts`                              | added    | Helpers shared by the `/api/precisely` handlers |
+| `e2e/precisely/**`                              | added    | e2e tests for the `/api/precisely` API          |
+| `proxy.ts`                                      | modified | Puts `/api/precisely/**` behind the API key     |
 | `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`       |
 | `npm/package.json`                              | modified | Declares the dependencies we add (see below)    |
 
@@ -235,18 +237,48 @@ Ported from our old `jackson-api` service. These live under
 in a shape our services consume directly, without going through the paginated
 upstream `/api/v1` API.
 
-`proxy.ts` adds `/api/precisely/**` to `unAuthenticatedApiRoutes`, so **these
-endpoints have no authentication of their own**. They must only be reachable
-from inside the cluster — never expose them on a public ingress.
+### Authentication
 
-All handlers ignore `req.method`, so every verb behaves as a GET.
+`proxy.ts` adds `/api/precisely/**` to the API-key branch, the one that already
+guards `/api/v1/**` and `/api/internals/**`. Every request — the bare
+`/api/precisely` ping included — must carry one of the keys in
+`JACKSON_API_KEYS` (or `API_KEYS`):
+
+```
+Authorization: Bearer <key>
+```
+
+kvasir sends its key this way. A request without a valid key gets a 401 from the
+proxy and never reaches a handler. Paths that do not match the glob exactly
+(another case, a doubled slash) fall through to the proxy's default deny.
+
+That one array entry is the whole of our `proxy.ts` delta.
+
+An API key unlocks SSO client secrets here, so the endpoints must stay read-only
+and cluster-internal — never expose them on a public ingress — and return only
+what our consumers read.
+
+`e2e/precisely/auth.spec.ts` covers this: no key, a wrong key and odd spellings
+of the path are never answered with a 200; a valid key is.
+
+### Handler behaviour
+
+The shared pieces live in `lib/precisely.ts`:
+
+- **GET only.** Any other method is answered with 405 and `Allow: GET`.
+- **Error status.** Errors from the Polis directory-sync controllers are returned
+  with their `code` as the HTTP status. Thrown errors use their `statusCode`, or
+  500 when they carry none.
+- **Pagination.** `fetchAllPages` reads 25 at a time. A failing page is retried;
+  after three consecutive failures the request is answered with 502, so a partial
+  result is never returned as a success.
 
 ### Endpoints
 
 | Method | Path                                                 | Returns                                              |
 | ------ | ---------------------------------------------------- | ---------------------------------------------------- |
 | GET    | `/api/precisely`                                     | `{}` — liveness ping                                 |
-| GET    | `/api/precisely/dsync`                               | All directory configs                                |
+| GET    | `/api/precisely/dsync`                               | Every directory, trimmed (see below)                 |
 | GET    | `/api/precisely/dsync/:directoryId`                  | Full directory snapshot (see below)                  |
 | GET    | `/api/precisely/dsync/:directoryId/users`            | `{ users }` — all users in the directory             |
 | GET    | `/api/precisely/dsync/:directoryId/users/:id`        | `{ user }`                                           |
@@ -256,10 +288,17 @@ All handlers ignore `req.method`, so every verb behaves as a GET.
 | GET    | `/api/precisely/sso/:clientID`                       | `{ conn }` — the SSO connection for a client ID      |
 | GET    | `/api/precisely/sso/code/:code`                      | `{ conn }` — the SSO connection behind an OAuth code |
 
+`/api/precisely/dsync` returns each directory as
+`{ id, name, tenant, product, type, deactivated }` — no SCIM endpoint or secret,
+no webhook config. Both `sso` endpoints return only
+`{ conn: { clientID, clientSecret } }`, which is what kvasir needs for the code
+exchange, and 404 when there is no connection. The other `dsync` endpoints return
+Polis's user and group records unchanged; kvasir reads the users' `raw`
+attributes.
+
 Every `dsync` handler first resolves the directory via
 `dsync.directories.get(directoryId)` and then scopes the user/group API with
-`setTenantAndProduct(directory.tenant, directory.product)`. Errors from the Polis
-controllers are returned as-is with their `code` as the HTTP status.
+`setTenantAndProduct(directory.tenant, directory.product)`.
 
 ### The directory snapshot (`/api/precisely/dsync/:directoryId`)
 
@@ -290,9 +329,6 @@ after every upstream sync.**
 
 ### Known quirks
 
-- Pagination loops use `pageLimit: 25` and treat an error as "skip this page and
-  keep going" rather than aborting, so a partial result can be returned as a
-  success.
 - `/users/:id/groups` walks every group in the directory and calls
   `isUserInGroup` for each one; it is O(number of groups) per request.
 - Several handlers deep-import from `@boxyhq/saml-jackson/src/...` rather than
