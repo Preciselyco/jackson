@@ -1,8 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import jackson from '@lib/jackson';
 import { GroupMembership } from '@boxyhq/saml-jackson';
+import { allowGet, fetchAllPages, sendError } from '@lib/precisely';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (!allowGet(req, res)) return;
+
   const { directorySyncController: dsync } = await jackson();
 
   const { data: directory, error: dirErr } = await dsync.directories.get(req.query.directoryId as string);
@@ -19,24 +22,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
-  let pageOffset = 0;
-  let members: Pick<GroupMembership, 'user_id'>[] = [];
-
-  while (true) {
-    const { data, error: memErr } = await groupAPI.getGroupMembers({
-      groupId: group.id as string,
-      pageLimit: 25,
-      pageOffset,
-    });
-    pageOffset += 25;
-    if (memErr) {
-      continue;
-    }
-    if (!data || data.length == 0) {
-      break;
-    }
-    members.push(...data);
+  try {
+    const members = await fetchAllPages<Pick<GroupMembership, 'user_id'>>((page) =>
+      groupAPI.getGroupMembers({ groupId: group.id as string, ...page })
+    );
+    res.status(200).json({ group, members });
+  } catch (err: any) {
+    sendError(res, err);
   }
-
-  res.status(200).json({ group, members });
 }

@@ -2,6 +2,7 @@ import jackson from '@lib/jackson';
 import { Storable, Encrypted } from '@boxyhq/saml-jackson';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { decrypt } from '@boxyhq/saml-jackson/src/db/encrypter';
+import { allowGet, sendError } from '@lib/precisely';
 
 function _decrypt(res: Encrypted, encryptionKey: string) {
   const encKey = Buffer.from(encryptionKey, 'hex');
@@ -12,6 +13,8 @@ function _decrypt(res: Encrypted, encryptionKey: string) {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (!allowGet(req, res)) return;
+
   const { connectionAPIController: connAPI, oauthController: oauth } = await jackson();
   const codeStore = (oauth as any).codeStore as Storable;
 
@@ -27,8 +30,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const conns = await connAPI.getConnections({
       clientID: code.clientID,
     });
-    res.status(200).json({ conn: conns[0] });
+    if (!conns[0]) {
+      res.status(404).json({ error: { message: 'Connection not found' } });
+      return;
+    }
+    const { clientID, clientSecret } = conns[0];
+    res.status(200).json({ conn: { clientID, clientSecret } });
   } catch (err: any) {
-    res.status(err.statusCode).json(err);
+    sendError(res, err);
   }
 }
