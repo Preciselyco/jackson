@@ -127,8 +127,13 @@ deliberate `deploy_shelob.sh` call by hand.
 A pull request from a branch of this repository pushes
 `europe-docker.pkg.dev/precisely-production/services-pr/jackson:<short sha>-gh`
 (head commit's sha). That image is for staging only, deployed by hand with
-`IMAGE_REPOSITORY=services-pr ./deploy_shelob.sh staging jackson <short sha>-gh provisioning`. `make docker-push` builds and pushes
-by hand. Cloud Build is retired. See `PRECISELY.md`.
+`IMAGE_REPOSITORY=services-pr ./deploy_shelob.sh staging jackson <short sha>-gh provisioning`.
+
+The two pushes use separate service accounts: `github-actions-jackson` (bound
+to `refs/heads/precisely`, writes `services` only) for merges, and
+`github-actions-jackson-pr` (bound to the `pull_request` subject, writes
+`services-pr` only) for pull requests. `make docker-push` builds and pushes by
+hand. Cloud Build is retired. See `PRECISELY.md`.
 
 ## Conventions
 

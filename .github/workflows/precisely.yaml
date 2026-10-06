@@ -170,9 +170,13 @@ jobs:
       # tag every service uses.
       #
       # push_repo decides where, if anywhere, the image goes, and is the one
-      # condition the auth, login and push steps below test:
-      #   services     a push to `precisely`, i.e. a merge — the release image
-      #   services-pr  a pull request from a branch of this repository
+      # condition the auth, login and push steps below test. service_account is
+      # the identity that push runs as; each account can write to its own
+      # repository only:
+      #   services     a push to `precisely`, i.e. a merge — the release image,
+      #                as github-actions-jackson
+      #   services-pr  a pull request from a branch of this repository, as
+      #                github-actions-jackson-pr
       #   (empty)      anything else, fork pull requests included: build only
       # A fork's pull request runs without access to this repository's
       # identity, so it must never reach the auth step.
@@ -183,21 +187,27 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           push_repo=""
+          service_account=""
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             commit_sha="$PR_HEAD_SHA"
             if [ "$PR_HEAD_REPO" = "$GITHUB_REPOSITORY" ]; then
               push_repo="services-pr"
+              service_account="github-actions-jackson-pr@precisely-production.iam.gserviceaccount.com"
             fi
           else
             commit_sha="$GITHUB_SHA"
             if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/precisely" ]; then
               push_repo="services"
+              service_account="github-actions-jackson@precisely-production.iam.gserviceaccount.com"
             fi
           fi
           short_sha=$(echo "$commit_sha" | cut -c 1-7)
           tag="${short_sha}-gh"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "push_repo=$push_repo" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "push_repo=$push_repo"
+            echo "service_account=$service_account"
+          } >> "$GITHUB_OUTPUT"
           echo "IMAGE=europe-docker.pkg.dev/precisely-production/${push_repo:-services}/jackson:$tag" >> "$GITHUB_ENV"
 
       # Built before authenticating on purpose: Dockerfile line 39 is `COPY . .`,
@@ -223,13 +233,19 @@ jobs:
       # away from a world-readable log or artifact; a federated token lasts
       # minutes and is only issued to a workflow run in this repository.
       #
-      # Neither value below is a secret, so they are written out rather than
+      # None of these values is a secret, so they are written out rather than
       # hidden in an org secret this repository may or may not be granted.
-      # Both come from ../iap/gcp-github (pulumi stack `production`): the
-      # provider is the shared `workloadIdentityProvider` output, the account is
-      # `jacksonServiceAccountEmail`. That account exists only to push this
-      # image — it holds artifactregistry.writer on the `services` and
-      # `services-pr` repositories and nothing else.
+      # All come from ../iap/gcp-github (pulumi stack `production`): the
+      # provider is the shared `workloadIdentityProvider` output; the service
+      # account is picked in `Set build vars`. There are two, and each exists
+      # only to push this image:
+      #   github-actions-jackson     `jacksonServiceAccountEmail`; bound to
+      #                              refs/heads/precisely, artifactregistry.writer
+      #                              on `services` only
+      #   github-actions-jackson-pr  bound to the pull_request OIDC subject,
+      #                              artifactregistry.writer on `services-pr` only
+      # So a pull request run can never write a release image, and neither
+      # account holds anything else.
       #
       # An access token straight into docker login rather than gcloud: nothing
       # else here needs gcloud, and it drops the pinned SDK version. This is the
@@ -241,7 +257,7 @@ jobs:
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions
-          service_account: github-actions-jackson@precisely-production.iam.gserviceaccount.com
+          service_account: ${{ steps.vars.outputs.service_account }}
           token_format: access_token
           # No credentials file in the workspace of a public repository's build.
           create_credentials_file: false
