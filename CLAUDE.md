@@ -39,8 +39,11 @@ conflict waiting to happen.
 
 Files we add (upstream never touches them):
 
-- `pages/api/precisely/**` — our unauthenticated, read-only internal API for
-  directory-sync and SSO data.
+- `pages/api/precisely/**` — our read-only internal API for directory-sync and
+  SSO data, behind the API key.
+- `lib/precisely.ts` — helpers shared by those handlers (GET-only check, error
+  status, bounded pagination).
+- `e2e/precisely/` — e2e tests for that API's authentication and handlers.
 - `Makefile`, `deploy_shelob.sh` — manual build/push and rollout.
 - `.github/workflows/precisely.yaml` — our CI. Runs every check, the build and
   every test, and on a merge to `precisely` pushes the container to our Artifact
@@ -60,7 +63,8 @@ Upstream files we modify (these are the rebase conflict points):
   we modify inside the vendored `npm/` library.**
 - `npm/package.json` — declares the packages we add. `scim-patch` is currently
   the only one; record any new package in `PRECISELY.md` too.
-- `proxy.ts` — one line adding `/api/precisely/**` to `unAuthenticatedApiRoutes`.
+- `proxy.ts` — one line adding `/api/precisely/**` to the API-key branch, next to
+  `/api/v1/**` and `/api/internals/**`.
 
 Everything else is upstream and should be left alone.
 
@@ -127,6 +131,7 @@ by hand. Cloud Build is retired. See `PRECISELY.md`.
   each Precisely change in its own focused commit so it survives rebases.
 - New Precisely-only API routes go under `pages/api/precisely/`, not into
   upstream's `pages/api/v1/`.
-- `/api/precisely/**` is exempt from authentication in `proxy.ts`. Anything added
-  there is reachable without credentials by whoever can reach the pod, so it must
-  stay read-only and cluster-internal.
+- `/api/precisely/**` requires an API key (one of `JACKSON_API_KEYS`, sent as
+  `Authorization: Bearer <key>`), enforced in `proxy.ts`. A key grants read access
+  to SSO client secrets, so the endpoints stay read-only, GET-only and
+  cluster-internal, and return only the fields our consumers read.
