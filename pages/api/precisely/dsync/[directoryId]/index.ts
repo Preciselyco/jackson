@@ -2,8 +2,11 @@ import jackson from '@lib/jackson';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { Groups } from '@boxyhq/saml-jackson/src/directory-sync/scim/Groups';
 import { Users } from '@boxyhq/saml-jackson/src/directory-sync/scim/Users';
+import { allowGet, fetchAllPages, sendError } from '@lib/precisely';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (!allowGet(req, res)) return;
+
   const { directorySyncController: dsync } = await jackson();
 
   const { data: directory, error: dirErr } = await dsync.directories.get(req.query.directoryId as string);
@@ -15,12 +18,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const userAPI = dsync.users.setTenantAndProduct(directory.tenant, directory.product);
   const groupAPI = dsync.groups.setTenantAndProduct(directory.tenant, directory.product);
 
-  const [users, groups] = await Promise.all([
-    fetchUsers(userAPI, directory.id),
-    fetchGroups(groupAPI, directory.id),
-  ]);
-
-  const members = await Promise.all(Object.keys(groups).map((groupId) => fetchMembers(groupAPI, groupId)));
+  let users: Record<string, any>;
+  let groups: Record<string, any>;
+  let members: { group_id: string; user_id: string }[][];
+  try {
+    [users, groups] = await Promise.all([
+      fetchUsers(userAPI, directory.id),
+      fetchGroups(groupAPI, directory.id),
+    ]);
+    members = await Promise.all(Object.keys(groups).map((groupId) => fetchMembers(groupAPI, groupId)));
+  } catch (err: any) {
+    sendError(res, err);
+    return;
+  }
 
   members.flat().forEach((m) => {
     const u = users[m.user_id];
@@ -51,88 +61,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 }
 
 async function fetchUsers(userAPI: Users, directoryId: string) {
-  let pageOffset = 0;
-  let users: Record<string, any> = {};
+  const users: Record<string, any> = {};
+  const data = await fetchAllPages((page) => userAPI.getAll({ directoryId, ...page }));
 
-  while (true) {
-    const { data, error } = await userAPI.getAll({
-      directoryId,
-      pageLimit: 25,
-      pageOffset,
-    });
-    pageOffset += 25;
-    if (error) {
-      continue;
-    }
-    if (!data || data.length == 0) {
-      break;
-    }
-
-    data.forEach((u) => {
-      users[u.id] = {
-        id: u.id,
-        email: u.email,
-        first_name: u.first_name,
-        last_name: u.last_name,
-        active: u.active,
-        groups: [],
-      };
-    });
-  }
+  data.forEach((u) => {
+    users[u.id] = {
+      id: u.id,
+      email: u.email,
+      first_name: u.first_name,
+      last_name: u.last_name,
+      active: u.active,
+      groups: [],
+    };
+  });
 
   return users;
 }
 
 async function fetchGroups(groupAPI: Groups, directoryId: string) {
-  let pageOffset = 0;
-  let groups: Record<string, any> = {};
+  const groups: Record<string, any> = {};
+  const data = await fetchAllPages((page) => groupAPI.getAll({ directoryId, ...page }));
 
-  while (true) {
-    const { data, error } = await groupAPI.getAll({
-      directoryId,
-      pageLimit: 25,
-      pageOffset,
-    });
-    pageOffset += 25;
-    if (error) {
-      continue;
-    }
-    if (!data || data.length == 0) {
-      break;
-    }
-
-    data.forEach((g) => {
-      groups[g.id] = {
-        id: g.id,
-        name: g.name,
-        members: [],
-      };
-    });
-  }
+  data.forEach((g) => {
+    groups[g.id] = {
+      id: g.id,
+      name: g.name,
+      members: [],
+    };
+  });
 
   return groups;
 }
 
 async function fetchMembers(groupAPI: Groups, groupId: string) {
-  let pageOffset = 0;
-  let members: { group_id: string; user_id: string }[] = [];
+  const data = await fetchAllPages((page) => groupAPI.getGroupMembers({ groupId, ...page }));
 
-  while (true) {
-    const { data, error } = await groupAPI.getGroupMembers({
-      groupId,
-      pageLimit: 25,
-      pageOffset,
-    });
-    pageOffset += 25;
-    if (error) {
-      continue;
-    }
-    if (!data || data.length == 0) {
-      break;
-    }
-
-    members.push(...data.map(({ user_id }) => ({ user_id, group_id: groupId })));
-  }
-
-  return members;
+  return data.map(({ user_id }) => ({ user_id, group_id: groupId }));
 }

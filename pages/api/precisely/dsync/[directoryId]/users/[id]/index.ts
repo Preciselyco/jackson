@@ -1,7 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import jackson from '@lib/jackson';
+import { allowGet } from '@lib/precisely';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (!allowGet(req, res)) return;
+
   const { directorySyncController: dsync } = await jackson();
 
   const { data: directory, error: dirErr } = await dsync.directories.get(req.query.directoryId as string);
