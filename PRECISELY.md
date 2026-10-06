@@ -77,7 +77,7 @@ make            # docker build, tags :$(git describe --always) and :latest
 make docker-push
 ```
 
-Image name: `europe-west3-docker.pkg.dev/precisely-production/services/jackson`.
+Image name: `europe-docker.pkg.dev/precisely-production/services/jackson`.
 
 ### `deploy_shelob.sh`
 
@@ -90,6 +90,21 @@ The manual rollout. With the Shelob secret in `.shelob`, run
 - `SHELOB_TARGETS` — optional environment variable, a space-separated list of
   Shelob hosts. When set, it overrides the cluster-derived host and the script
   posts to every target, failing if any of them fails.
+- `IMAGE_REPOSITORY` — optional environment variable. Set it to `services-pr` to
+  roll out an image a pull request built (see _The image push_ below); the script
+  then adds `"image_repository": "services-pr"` to the body, the same field the
+  shared `shelob-deploy` action sends. Empty means the release repository,
+  `services`. Any other value, or `services-pr` with a cluster other than
+  `staging`, is refused.
+
+Deploying a pull request's image to staging:
+
+```bash
+IMAGE_REPOSITORY=services-pr ./deploy_shelob.sh staging jackson <short sha>-gh provisioning
+```
+
+`<short sha>` is the first seven characters of the pull request's head commit,
+and `.shelob` must hold the staging Shelob secret.
 
 Cloud Build and `cloudbuild.yaml` are retired.
 
@@ -105,17 +120,30 @@ and on `workflow_dispatch`. Two jobs:
   `npm run build`, the `npm/` library tests, and the Playwright e2e suite against
   `mock-saml`. The `env` block is copied verbatim from upstream's `ci` job, so it
   should be re-copied if upstream changes it.
-- **`image`** — builds the `Dockerfile`, and on a merge to `precisely` pushes it
-  to our Artifact Registry. On a pull request it builds and stops, which is what
-  catches a Dockerfile broken by an upstream sync.
+- **`image`** — builds the `Dockerfile` on every run, which is what catches a
+  Dockerfile broken by an upstream sync, and pushes it to our Artifact Registry:
+  on a merge to `precisely` to `services`, and for a pull request from a branch
+  of this repository to `services-pr`. A pull request from a fork builds and
+  stops — it never authenticates or pushes.
 
 #### The image push
 
 ```
-europe-west3-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh
+europe-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh      # merge to precisely
+europe-docker.pkg.dev/precisely-production/services-pr/jackson:<short sha>-gh   # same-repo pull request
 ```
 
-`<short sha>-gh` is the release tag every service uses.
+`<short sha>-gh` is the release tag every service uses. For a pull request the
+short sha is the pull request's **head** commit, not the merge commit GitHub
+checks out.
+
+Which of the two (if either) is pushed is decided once, in the `Set build vars`
+step, as its `push_repo` output; the auth, login and push steps all run only when
+it is non-empty. `services-pr` is the pull request registry the other services
+use too: its images are for deploying to **staging by hand** (see
+`deploy_shelob.sh` above), never to production. A pull request does not need
+`pull_request_target` for this — a branch of this repository already gets the
+OIDC token on `pull_request`, and a fork's run never reaches the auth step.
 
 Registry auth is Workload Identity Federation, not a service account key. **This
 repository is public** — it is our fork of `ory/polis`, and GitHub does not allow
@@ -136,8 +164,10 @@ Both are managed in the `iap` repo, `gcp-github` (Pulumi stack `production`), an
 are its `workloadIdentityProvider` and `jacksonServiceAccountEmail` outputs. The
 pool and provider are shared with the other Precisely repositories; the service
 account is not. It exists only to push this image and holds
-`roles/artifactregistry.writer` on the single `services` Artifact Registry
-repository — no project-level roles at all.
+`roles/artifactregistry.writer` on the `services` and `services-pr` Artifact
+Registry repositories — no project-level roles at all. (The `services-pr` grant
+comes from the sibling `iap` change; until it is applied, the pull request push
+fails with a permission error.)
 
 That separation is deliberate. The shared `github-actions` service account also
 holds `roles/container.developer` and `roles/storage.admin`, so binding a public
