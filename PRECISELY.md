@@ -152,22 +152,33 @@ here would be one careless step away from a world-readable log or artifact, and
 would stay valid until somebody rotated it. A federated token lasts minutes and
 is only ever issued to a workflow run in this repository.
 
-Neither value in the workflow is a secret, so both are written out rather than
-kept in an org secret:
+None of the values in the workflow is a secret, so they are written out rather
+than kept in an org secret:
 
-|                              |                                                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `workload_identity_provider` | `projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions` |
-| `service_account`            | `github-actions-jackson@precisely-production.iam.gserviceaccount.com`                                  |
+|                                |                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `workload_identity_provider`   | `projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions` |
+| `service_account` (merge)      | `github-actions-jackson@precisely-production.iam.gserviceaccount.com`                                  |
+| `service_account` (PR, branch) | `github-actions-jackson-pr@precisely-production.iam.gserviceaccount.com`                               |
 
-Both are managed in the `iap` repo, `gcp-github` (Pulumi stack `production`), and
-are its `workloadIdentityProvider` and `jacksonServiceAccountEmail` outputs. The
-pool and provider are shared with the other Precisely repositories; the service
-account is not. It exists only to push this image and holds
-`roles/artifactregistry.writer` on the `services` and `services-pr` Artifact
-Registry repositories — no project-level roles at all. (The `services-pr` grant
-comes from the sibling `iap` change; until it is applied, the pull request push
-fails with a permission error.)
+All are managed in the `iap` repo, `gcp-github` (Pulumi stack `production`). The
+provider is its `workloadIdentityProvider` output, and the merge account its
+`jacksonServiceAccountEmail` output; the pull request account comes from the
+sibling `iap` change and, until that is applied, the pull request push fails to
+authenticate. The pool and provider are shared with the other Precisely
+repositories; the two service accounts are not. The `Set build vars` step picks
+the account, as its `service_account` output, alongside `push_repo`:
+
+- **`github-actions-jackson`** — used on a push to `precisely`. Bound only to
+  `refs/heads/precisely`, and holds `roles/artifactregistry.writer` on the
+  `services` repository only.
+- **`github-actions-jackson-pr`** — used for a pull request from a branch of this
+  repository. Bound only to the `pull_request` OIDC subject, and holds
+  `roles/artifactregistry.writer` on the `services-pr` repository only.
+
+Neither has any project-level role. Splitting them means code under review can
+never write a release image: a pull request run can only mint a token for the PR
+account, and that account cannot write to `services`.
 
 That separation is deliberate. The shared `github-actions` service account also
 holds `roles/container.developer` and `roles/storage.admin`, so binding a public
