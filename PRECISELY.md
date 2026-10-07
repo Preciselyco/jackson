@@ -81,15 +81,27 @@ Image name: `europe-docker.pkg.dev/precisely-production/services/jackson`.
 
 ### `deploy_shelob.sh`
 
-The manual rollout. With the Shelob secret in `.shelob`, run
+The manual rollout. Run
 `deploy_shelob.sh <cluster> jackson <short sha>-gh provisioning`; it POSTs
 `{deployment, tag, namespace}` to Shelob to roll out that image.
 
-- `<cluster>` — `staging` selects `shelob.stg.precisely.se`, anything else
-  selects `shelob.precisely.se`.
+Shelob authenticates the call with a short-lived token for the
+`shelob-deployer` Kubernetes service account of the target cluster. The script
+creates one itself with
+`kubectl --context <context> create token shelob-deployer -n default --audience=shelob --duration=10m`
+and sends it as `Authorization: Bearer <token>`, through a temporary header
+file rather than the command line. Creating the token needs the cluster's
+kubectl context configured and membership of developers@precisely.se; the
+script stops with an error if it gets no token.
+
+- `<cluster>` — `staging` selects `shelob.stg.precisely.se` and the
+  `precisely-staging` context, `production` selects `shelob.precisely.se` and
+  the `precisely-production` context. Any other value is refused.
 - `SHELOB_TARGETS` — optional environment variable, a space-separated list of
   Shelob hosts. When set, it overrides the cluster-derived host and the script
-  posts to every target, failing if any of them fails.
+  posts to every target, failing if any of them fails. The token still comes
+  from the `<cluster>` context and is only valid for that cluster's Shelob, so
+  every target must belong to it.
 - `IMAGE_REPOSITORY` — optional environment variable. Set it to `services-pr` to
   roll out an image a pull request built (see _The image push_ below); the script
   then adds `"image_repository": "services-pr"` to the body, the same field the
@@ -103,8 +115,8 @@ Deploying a pull request's image to staging:
 IMAGE_REPOSITORY=services-pr ./deploy_shelob.sh staging jackson <short sha>-gh provisioning
 ```
 
-`<short sha>` is the first seven characters of the pull request's head commit,
-and `.shelob` must hold the staging Shelob secret.
+`<short sha>` is the first seven characters of the pull request's head commit.
+The token is created through the `precisely-staging` context.
 
 Cloud Build and `cloudbuild.yaml` are retired.
 

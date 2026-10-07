@@ -122,7 +122,11 @@ A merge to `precisely` builds and pushes
 `europe-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh`
 through `.github/workflows/precisely.yaml`. Nothing deploys it automatically:
 rolling it out to the `jackson` deployment in the `provisioning` namespace is a
-deliberate `deploy_shelob.sh` call by hand.
+deliberate `./deploy_shelob.sh <staging|production> jackson <short sha>-gh provisioning`
+call by hand. The script authenticates to Shelob with a short-lived token for
+the cluster's `shelob-deployer` service account, which it creates with
+`kubectl --context precisely-<cluster> create token` — that needs membership of
+developers@precisely.se. See `PRECISELY.md` for details.
 
 A pull request from a branch of this repository pushes
 `europe-docker.pkg.dev/precisely-production/services-pr/jackson:<short sha>-gh`
