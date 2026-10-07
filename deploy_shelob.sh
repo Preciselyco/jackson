@@ -10,6 +10,21 @@ NAMESPACE=${4?param missing - namespace}
 # empty means the release repository. Staging only.
 IMAGE_REPOSITORY=${IMAGE_REPOSITORY:-}
 
+case "$CLUSTER" in
+  staging)
+    KUBE_CONTEXT=precisely-staging
+    SUBDOMAIN=".stg"
+    ;;
+  production)
+    KUBE_CONTEXT=precisely-production
+    SUBDOMAIN=""
+    ;;
+  *)
+    echo "cluster must be staging or production, got: $CLUSTER" >&2
+    exit 1
+    ;;
+esac
+
 if [[ -n "$IMAGE_REPOSITORY" && "$IMAGE_REPOSITORY" != "services-pr" ]]; then
   echo "IMAGE_REPOSITORY must be empty or services-pr" >&2
   exit 1
@@ -25,14 +40,38 @@ if [[ -n "$IMAGE_REPOSITORY" ]]; then
     \"image_repository\": \"$IMAGE_REPOSITORY\""
 fi
 
-SHELOB_SECRET=$(cat .shelob)
+# Shelob authenticates callers with a short-lived token for the shelob-deployer
+# service account of the cluster it runs in. Creating one needs membership of
+# developers@precisely.se.
+if ! TOKEN=$(kubectl --context "$KUBE_CONTEXT" create token shelob-deployer \
+  -n default --audience=shelob --duration=10m); then
+  echo "Could not create a shelob-deployer token in context $KUBE_CONTEXT." >&2
+  echo "Are you a member of developers@precisely.se, and is the context configured?" >&2
+  exit 1
+fi
+if [[ -z "$TOKEN" ]]; then
+  echo "kubectl returned an empty shelob-deployer token for context $KUBE_CONTEXT." >&2
+  echo "Are you a member of developers@precisely.se?" >&2
+  exit 1
+fi
 
-cat <<EOF >headers
+WORKDIR=$(mktemp -d)
+trap 'rm -rf "$WORKDIR"' EXIT
+chmod 700 "$WORKDIR"
+HEADERS="$WORKDIR/headers"
+BODY="$WORKDIR/body"
+
+# The token goes into a file read by curl, never onto a command line.
+(
+  umask 077
+  cat <<EOF >"$HEADERS"
 Content-Type: application/json
-X-Precisely-Secret: $SHELOB_SECRET
+Authorization: Bearer $TOKEN
 EOF
+)
+unset TOKEN
 
-cat <<EOF >body
+cat <<EOF >"$BODY"
 {
     "deployment": "$DEPLOYMENT",
     "tag": "$TAG",
@@ -40,31 +79,25 @@ cat <<EOF >body
 }
 EOF
 
-echo | cat body
+echo | cat "$BODY"
 
 HAS_ERROR=""
 
 if [[ -z "${SHELOB_TARGETS}" ]]; then
-  SUBDOMAIN=
-  if [ "$CLUSTER" = "staging" ]; then
-    SUBDOMAIN=".stg"
-  fi
-
   echo "Calling shelob at shelob${SUBDOMAIN}.precisely.se"
-  if ! curl --fail --http1.1 -XPOST -H"$(cat headers)" -d @body https://shelob${SUBDOMAIN}.precisely.se/deploy; then
+  if ! curl --fail --http1.1 -XPOST -H @"$HEADERS" -d @"$BODY" "https://shelob${SUBDOMAIN}.precisely.se/deploy"; then
     HAS_ERROR="yes"
   fi
 else
+  # The token is only valid for the shelob of the cluster named by the cluster
+  # argument, so every target here must belong to that cluster.
   for URL in $SHELOB_TARGETS; do
     echo "Calling shelob at $URL"
-    if ! curl --fail --http1.1 -XPOST -H"$(cat headers)" -d @body "https://${URL}/deploy"; then
+    if ! curl --fail --http1.1 -XPOST -H @"$HEADERS" -d @"$BODY" "https://${URL}/deploy"; then
       HAS_ERROR="yes"
     fi
   done
 fi
-
-rm headers
-rm body
 
 if [[ -n "$HAS_ERROR" ]]; then
   exit 1
