@@ -20,18 +20,20 @@ should always match the list below, with one exception — see _Lockfiles_ below
 
 ## Files we own or modify
 
-| File                                            | Kind     | Purpose                                         |
-| ----------------------------------------------- | -------- | ----------------------------------------------- |
-| `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide        |
-| `Makefile`                                      | added    | Manual container build and push                 |
-| `deploy_shelob.sh`                              | added    | Rollout call to Shelob                          |
-| `.github/workflows/precisely.yaml`              | added    | Our CI — checks, tests, and the image push      |
-| `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API   |
-| `lib/precisely.ts`                              | added    | Helpers shared by the `/api/precisely` handlers |
-| `e2e/precisely/**`                              | added    | e2e tests for the `/api/precisely` API          |
-| `proxy.ts`                                      | modified | Puts `/api/precisely/**` behind the API key     |
-| `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`       |
-| `npm/package.json`                              | modified | Declares the dependencies we add (see below)    |
+| File                                            | Kind     | Purpose                                          |
+| ----------------------------------------------- | -------- | ------------------------------------------------ |
+| `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide         |
+| `Makefile`                                      | added    | Manual container build and push                  |
+| `deploy_shelob.sh`                              | added    | Rollout call to Shelob                           |
+| `.github/workflows/precisely.yaml`              | added    | Our CI — checks, tests, and the image push       |
+| `pages/api/precisely/**`                        | added    | Read-only internal directory-sync and SSO API    |
+| `lib/precisely.ts`                              | added    | Helpers shared by the `/api/precisely` handlers  |
+| `lib/adminPortalSSO.ts`                         | added    | Admin-portal tenant check for SAML sign-in       |
+| `e2e/precisely/**`                              | added    | Tests for the `/api/precisely` API and the above |
+| `pages/api/auth/[...nextauth].ts`               | modified | Refuses SAML sign-in from non-admin tenants      |
+| `proxy.ts`                                      | modified | Puts `/api/precisely/**` behind the API key      |
+| `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`        |
+| `npm/package.json`                              | modified | Declares the dependencies we add (see below)     |
 
 ## Dependencies we add
 
@@ -446,3 +448,22 @@ until Azure stops doing this.
 This is the only change we make to the vendored `npm/` library, and it is a
 rewrite of a method upstream actively maintains. Expect conflicts here on rebase,
 and re-run the directory-sync tests (`cd npm && npm test`) afterwards.
+
+## 4. Admin-portal SAML sign-in tenant check (DEV-1031)
+
+Upstream's admin-portal sign-in (`pages/api/auth/[...nextauth].ts`) accepts any
+Jackson code. Neither provider checks which connection issued it:
+
+- `boxyhq-saml-idplogin` (IdP-initiated, `/admin/auth/idp-login`) exchanges the
+  code itself with `client_id=dummy` and the app's own `CLIENT_SECRET_VERIFIER`
+  (or an empty secret), so a code from **any** customer connection's IdP-initiated
+  login becomes an admin session.
+- `boxyhq-saml` (SP-initiated) takes `tenant`/`product` from the sign-in request,
+  so a connection whose allowed redirect URLs include our own URL can do the same.
+
+`lib/adminPortalSSO.ts` exports `isAdminPortalSSO(requested)`, true only when the
+profile's `requested.tenant`/`product` equal `ADMIN_PORTAL_SSO_TENANT`/`_PRODUCT`.
+`[...nextauth].ts` calls it in `authorize` for `boxyhq-saml-idplogin` and in the
+`signIn` callback for `boxyhq-saml`; credentials and email sign-in are unchanged.
+`e2e/precisely/admin-portal-sso.spec.ts` tests the check (it needs no browser or
+server). Drop all three once upstream ships an equivalent check.

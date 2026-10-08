@@ -43,7 +43,10 @@ Files we add (upstream never touches them):
   SSO data, behind the API key.
 - `lib/precisely.ts` — helpers shared by those handlers (GET-only check, error
   status, bounded pagination).
-- `e2e/precisely/` — e2e tests for that API's authentication and handlers.
+- `lib/adminPortalSSO.ts` — the admin-portal tenant check used by
+  `[...nextauth].ts` (DEV-1031).
+- `e2e/precisely/` — e2e tests for that API's authentication and handlers, and
+  for the admin-portal tenant check.
 - `Makefile`, `deploy_shelob.sh` — manual build/push and rollout.
 - `.github/workflows/precisely.yaml` — our CI. Runs every check, the build and
   every test, and pushes the container to our Artifact Registry as
@@ -65,6 +68,9 @@ Upstream files we modify (these are the rebase conflict points):
   we modify inside the vendored `npm/` library.**
 - `npm/package.json` — declares the packages we add. `scim-patch` is currently
   the only one; record any new package in `PRECISELY.md` too.
+- `pages/api/auth/[...nextauth].ts` — refuses `boxyhq-saml` and
+  `boxyhq-saml-idplogin` sign-in unless the profile was issued for the
+  admin-portal tenant/product (DEV-1031). Drop it once upstream checks this.
 - `proxy.ts` — one line adding `/api/precisely/**` to the API-key branch, next to
   `/api/v1/**` and `/api/internals/**`.
 
