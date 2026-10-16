@@ -141,6 +141,18 @@ jobs:
       - name: e2e tests
         run: npx ts-node --log-error e2e/support/pretest.ts && npx playwright test -x
 
+      # The directory-sync list API (DEV-1206) reads the store through SQL views and
+      # needs it unencrypted, but this job's env sets DB_ENCRYPTION_KEY like upstream's.
+      # The run above only checks that those routes refuse an encrypted store with a 501.
+      # Here e2e/precisely runs again against a second server without the key, on its
+      # own database (see e2e/precisely/playwright.config.ts).
+      - name: e2e tests on an unencrypted store
+        env:
+          PRECISELY_E2E_DB_URL: postgres://postgres:postgres@localhost:5432/precisely_plain
+        run: |
+          psql postgres://postgres:postgres@localhost:5432/postgres -c 'CREATE DATABASE precisely_plain'
+          npx playwright test -c e2e/precisely/playwright.config.ts
+
       - name: Upload e2e trace
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
