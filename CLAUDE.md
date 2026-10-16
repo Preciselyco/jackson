@@ -43,6 +43,10 @@ Files we add (upstream never touches them):
   SSO data, behind the API key.
 - `lib/precisely.ts` — helpers shared by those handlers (GET-only check, error
   status, bounded pagination).
+- `lib/precisely/` — the directory-sync list API (DEV-1206): kvasir's list
+  contract, SQL views and indexes over Jackson's store, and the queries. Read
+  _Directory-sync list API_ in `PRECISELY.md` before touching it, and re-run
+  `e2e/precisely` after every upstream sync.
 - `lib/adminPortalSSO.ts` — the admin-portal tenant check used by
   `[...nextauth].ts` (DEV-1031).
 - `e2e/precisely/` — e2e tests for that API's authentication and handlers, and
@@ -155,5 +159,11 @@ hand. Cloud Build is retired. See `PRECISELY.md`.
   upstream's `pages/api/v1/`.
 - `/api/precisely/**` requires an API key (one of `JACKSON_API_KEYS`, sent as
   `Authorization: Bearer <key>`), enforced in `proxy.ts`. A key grants read access
-  to SSO client secrets, so the endpoints stay read-only, GET-only and
+  to SSO client secrets, so the endpoints stay read-only, GET-only (POST only for
+  read-only queries that take a JSON body, like the dsync list routes) and
   cluster-internal, and return only the fields our consumers read.
+- Running `e2e/precisely` locally: `npm run build`, then
+  `npx playwright test -c e2e/precisely/playwright.config.ts` with the server env
+  (`DB_ENGINE=sql DB_TYPE=postgres API_KEYS=… NEXTAUTH_SECRET=…`) and
+  `PRECISELY_E2E_DB_URL` pointing at an empty Postgres database. It starts its own
+  server on :5226 without `DB_ENCRYPTION_KEY` and needs no browser.
