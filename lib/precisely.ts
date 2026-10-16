@@ -21,6 +21,16 @@ export function allowGet(req: NextApiRequest, res: NextApiResponse): boolean {
   return false;
 }
 
+// Answers anything but POST with a 405. Returns false when the handler should stop.
+export function allowPost(req: NextApiRequest, res: NextApiResponse): boolean {
+  if (req.method === 'POST') {
+    return true;
+  }
+  res.setHeader('Allow', 'POST');
+  res.status(405).json({ error: { message: `Method ${req.method} not allowed` } });
+  return false;
+}
+
 // The HTTP status for an error thrown by a Polis controller, 500 when it carries none.
 export function errorStatus(err: any): number {
   const status = Number(err?.statusCode);
