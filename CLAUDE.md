@@ -35,22 +35,19 @@ belongs upstream or is genuinely Precisely-specific — we want the delta agains
 upstream to stay as small as possible, because every line of it is a rebase
 conflict waiting to happen.
 
+The fork is limited to bug fixes, our CI and our deployment. It has **no API of
+its own**: kvasir reads Jackson's database directly, so don't add Precisely-only
+routes. That relies on the store being unencrypted (`DB_ENCRYPTION_KEY` unset),
+and an upstream change to the store schema or key layout breaks kvasir; check for
+one on every sync (_Syncing with upstream_ in `PRECISELY.md`).
+
 ## Where our changes live
 
 Files we add (upstream never touches them):
 
-- `pages/api/precisely/**` — our read-only internal API for directory-sync and
-  SSO data, behind the API key.
-- `lib/precisely.ts` — helpers shared by those handlers (GET-only check, error
-  status, bounded pagination).
-- `lib/precisely/` — the directory-sync list API (DEV-1206): kvasir's list
-  contract, SQL views and indexes over Jackson's store, and the queries. Read
-  _Directory-sync list API_ in `PRECISELY.md` before touching it, and re-run
-  `e2e/precisely` after every upstream sync.
 - `lib/adminPortalSSO.ts` — the admin-portal tenant check used by
   `[...nextauth].ts` (DEV-1031).
-- `e2e/precisely/` — e2e tests for that API's authentication and handlers, and
-  for the admin-portal tenant check.
+- `e2e/precisely/admin-portal-sso.spec.ts` — tests for that check.
 - `Makefile`, `deploy_shelob.sh` — manual build/push and rollout.
 - `.github/workflows/precisely.yaml` — our CI. Runs every check, the build and
   every test, and pushes the container to our Artifact Registry as
@@ -75,8 +72,6 @@ Upstream files we modify (these are the rebase conflict points):
 - `pages/api/auth/[...nextauth].ts` — refuses `boxyhq-saml` and
   `boxyhq-saml-idplogin` sign-in unless the profile was issued for the
   admin-portal tenant/product (DEV-1031). Drop it once upstream checks this.
-- `proxy.ts` — one line adding `/api/precisely/**` to the API-key branch, next to
-  `/api/v1/**` and `/api/internals/**`.
 
 Everything else is upstream and should be left alone.
 
@@ -155,15 +150,9 @@ hand. Cloud Build is retired. See `PRECISELY.md`.
   surrounding style; don't reformat upstream files you aren't otherwise editing.
 - Keep upstream files untouched unless the change is genuinely required, and keep
   each Precisely change in its own focused commit so it survives rebases.
-- New Precisely-only API routes go under `pages/api/precisely/`, not into
-  upstream's `pages/api/v1/`.
-- `/api/precisely/**` requires an API key (one of `JACKSON_API_KEYS`, sent as
-  `Authorization: Bearer <key>`), enforced in `proxy.ts`. A key grants read access
-  to SSO client secrets, so the endpoints stay read-only, GET-only (POST only for
-  read-only queries that take a JSON body, like the dsync list routes) and
-  cluster-internal, and return only the fields our consumers read.
-- Running `e2e/precisely` locally: `npm run build`, then
-  `npx playwright test -c e2e/precisely/playwright.config.ts` with the server env
-  (`DB_ENGINE=sql DB_TYPE=postgres API_KEYS=… NEXTAUTH_SECRET=…`) and
-  `PRECISELY_E2E_DB_URL` pointing at an empty Postgres database. It starts its own
-  server on :5226 without `DB_ENCRYPTION_KEY` and needs no browser.
+- Don't add Precisely-only API routes. kvasir reads Jackson's database instead
+  (see _Syncing with upstream_ in `PRECISELY.md`).
+- `e2e/precisely/admin-portal-sso.spec.ts` runs as part of the main e2e suite.
+  It needs no server, database or browser, so it can also run on its own with a
+  Playwright config that has no `webServer`/`globalSetup` and `testDir` set to
+  `e2e/precisely`: `npx playwright test -c <that config> --tsconfig tsconfig.json`.
