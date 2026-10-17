@@ -45,7 +45,7 @@ export async function proxy(req: NextRequest) {
   }
 
   // Validate API routes `/api/v1/**`
-  if (micromatch.isMatch(pathname, ['/api/v1/**', '/api/internals/**', '/api/precisely/**'])) {
+  if (micromatch.isMatch(pathname, ['/api/v1/**', '/api/internals/**'])) {
     if (!validateApiKey(extractAuthToken(req))) {
       return sendUnAuthorizedResponse({ message: 'Unauthorized' });
     }
