@@ -35,6 +35,7 @@ should always match the list below, with one exception — see _Lockfiles_ below
 | `proxy.ts`                                      | modified | Puts `/api/precisely/**` behind the API key      |
 | `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`        |
 | `npm/package.json`                              | modified | Declares the dependencies we add (see below)     |
+| `Dockerfile`                                    | modified | Runtime Node trusts the system CA store only     |
 
 ## Dependencies we add
 
@@ -687,3 +688,26 @@ profile's `requested.tenant`/`product` equal `ADMIN_PORTAL_SSO_TENANT`/`_PRODUCT
 `signIn` callback for `boxyhq-saml`; credentials and email sign-in are unchanged.
 `e2e/precisely/admin-portal-sso.spec.ts` tests the check (it needs no browser or
 server). Drop all three once upstream ships an equivalent check.
+
+## 5. Runtime trusts the system CA store (DEV-1299)
+
+Node ships its own copy of Mozilla's root store and uses it by default, ignoring
+the image's `ca-certificates`. When a root has to be distrusted urgently — as with
+the eMudhra intermediate key compromise (October 2026), where the bad chains end
+at `emSign ECC Root CA - G3` — Alpine ships the fix days or weeks before Node
+does. Jackson fetches IdP metadata and OIDC discovery/JWKS over TLS, so it must
+not wait for Node.
+
+The `runner` stage of `Dockerfile` therefore:
+
+- adds `--use-openssl-ca` to `NODE_OPTIONS`, so Node verifies against OpenSSL's
+  default store (`/etc/ssl/cert.pem` → Alpine's `ca-certificates-bundle`)
+  **instead of** its bundled roots. `--use-system-ca` is not a substitute: it adds
+  the system store to the bundled roots, so a root Node still bundles stays
+  trusted. `NODE_EXTRA_CA_CERTS` keeps working either way.
+- installs `ca-certificates-bundle>=20261020-r0`, the first Alpine release without
+  `emSign ECC Root CA - G3`, so the build fails rather than ship an older store.
+  Raise the floor when a later distrust needs a newer bundle.
+
+The deployment's environment must not set `NODE_OPTIONS`, or it replaces this
+value. Drop the flag once Node's bundled store is the one we want to follow again.
