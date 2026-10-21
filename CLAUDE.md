@@ -77,6 +77,9 @@ Upstream files we modify (these are the rebase conflict points):
   admin-portal tenant/product (DEV-1031). Drop it once upstream checks this.
 - `proxy.ts` — one line adding `/api/precisely/**` to the API-key branch, next to
   `/api/v1/**` and `/api/internals/**`.
+- `Dockerfile` — the runtime stage runs Node with `--use-openssl-ca` and requires a
+  minimum `ca-certificates-bundle`, so TLS trust follows Alpine's store rather
+  than Node's bundled roots (DEV-1299).
 
 Everything else is upstream and should be left alone.
 
