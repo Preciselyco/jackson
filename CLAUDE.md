@@ -74,7 +74,8 @@ Upstream files we modify (these are the rebase conflict points):
   admin-portal tenant/product (DEV-1031). Drop it once upstream checks this.
 - `Dockerfile` — the runtime stage runs Node with `--use-openssl-ca` and requires a
   minimum `ca-certificates-bundle`, so TLS trust follows Alpine's store rather
-  than Node's bundled roots (DEV-1299).
+  than Node's bundled roots (DEV-1299). It also pins a newer Node base image
+  than upstream (`NODEJS_IMAGE`).
 
 Everything else is upstream and should be left alone.
 
