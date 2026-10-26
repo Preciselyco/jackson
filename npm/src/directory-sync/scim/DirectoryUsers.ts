@@ -8,12 +8,47 @@ import type {
   EventCallback,
   IDirectoryConfig,
   IUsers,
-  UserPatchOperation,
 } from '../../typings';
-import { parseUserPatchRequest, extractStandardUserAttributes, updateRawUserAttributes } from './utils';
+import { extractStandardUserAttributes } from './utils';
 import { sendEvent } from '../utils';
 import { isConnectionActive } from '../../controller/utils';
 import { randomUUID } from 'crypto';
+import { scimPatch, type ScimPatchAddReplaceOperation, type ScimPatchOperation } from 'scim-patch';
+import _ from 'lodash';
+
+// scim-patch reads the keys of a no-path operation value as dotted attribute paths,
+// which mangles extension schema URNs such as
+// `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` (Entra sends the
+// enterprise extension in exactly this shape). Rewrite those keys as path-based
+// operations, which scim-patch resolves correctly, and leave everything else alone.
+const normalizePatchOperation = (operation: ScimPatchOperation): ScimPatchOperation[] => {
+  // A remove operation always carries a path, so anything left here is add/replace.
+  if (operation.path || !_.isPlainObject(operation.value)) {
+    return [operation];
+  }
+
+  const { op, value } = operation as ScimPatchAddReplaceOperation;
+  const operations: ScimPatchAddReplaceOperation[] = [];
+  const rest: Record<string, any> = {};
+
+  for (const [key, attribute] of Object.entries(value as Record<string, any>)) {
+    if (!key.toLowerCase().startsWith('urn:')) {
+      rest[key] = attribute;
+    } else if (_.isPlainObject(attribute)) {
+      for (const [name, subAttribute] of Object.entries(attribute as Record<string, any>)) {
+        operations.push({ op, path: `${key}:${name}`, value: subAttribute });
+      }
+    } else {
+      operations.push({ op, path: key, value: attribute });
+    }
+  }
+
+  if (!_.isEmpty(rest)) {
+    operations.push({ op, value: rest });
+  }
+
+  return operations;
+};
 
 interface DirectoryUsersParams {
   directories: IDirectoryConfig;
@@ -87,30 +122,51 @@ export class DirectoryUsers {
   }
 
   public async patch(directory: Directory, user: User, body: any): Promise<DirectorySyncResponse> {
-    const { Operations } = body as { Operations: UserPatchOperation[] };
+    const { Operations } = body as { Operations: ScimPatchOperation[] };
+
+    let rawAttributes: any = user.raw;
+    // Loop through operations to prevent invalid patches to not break the whole patch
+    for (const op of Operations.flatMap(normalizePatchOperation)) {
+      try {
+        rawAttributes = scimPatch(rawAttributes, [op]);
+      } catch (e) {
+        console.log('scimPatch', e);
+      }
+    }
+
+    const euser = 'urn:ietf:params:scim:schemas:extension:enterprise:2.0:User';
+
+    // Fix Azure faulty patch of manager value. Azure sets the manager to a string value which it then can't parse so we need to reconstruct the value.
+    if (
+      rawAttributes[euser] &&
+      rawAttributes[euser]['manager'] &&
+      (typeof rawAttributes[euser]['manager'] === 'string' ||
+        rawAttributes[euser]['manager'] instanceof String)
+    ) {
+      rawAttributes[euser]['manager'] = {
+        value: rawAttributes[euser]['manager'],
+      };
+    }
 
     let attributes: Partial<User> = {};
-    let rawAttributes = {};
-
-    // There can be multiple update operations in a single request for a user
-    for (const operation of Operations) {
-      const parsedAttributes = parseUserPatchRequest(operation);
-
-      attributes = {
-        ...attributes,
-        ...parsedAttributes.attributes,
-      };
-
-      rawAttributes = {
-        ...rawAttributes,
-        ...parsedAttributes.rawAttributes,
-      };
+    if (_.has(rawAttributes, 'active')) {
+      attributes.active = rawAttributes.active;
+    }
+    // The patched raw resource is the source of truth, so a name field removed by
+    // an op: "remove" has to be cleared on the user model rather than left stale.
+    attributes.first_name = _.get(rawAttributes, 'name.givenName', '');
+    attributes.last_name = _.get(rawAttributes, 'name.familyName', '');
+    if (_.has(rawAttributes, 'emails')) {
+      const email = _.find(rawAttributes.emails, (e: Record<string, string>) => e.type == 'work');
+      if (email) {
+        attributes.email = email.value;
+      }
     }
 
     const { data: updatedUser } = await this.users.update(user.id, {
       ...user,
       ...attributes,
-      raw: updateRawUserAttributes(user.raw, rawAttributes),
+      raw: rawAttributes,
     });
 
     await sendEvent('user.updated', { directory, user: updatedUser }, this.callback);
