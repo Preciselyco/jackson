@@ -6,6 +6,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import BoxyHQSAMLProvider from 'next-auth/providers/boxyhq-saml';
 import jackson from '@lib/jackson';
 import { validateEmailWithACL } from '@lib/utils';
+import { isAdminPortalSSO } from '@lib/adminPortalSSO';
 import { jacksonOptions as env } from '@lib/env';
 import { sessionName } from '@lib/constants';
 
@@ -57,7 +58,7 @@ export default NextAuth({
         // Fetch user info
         const userInfo = await oauthController.userInfo(access_token);
 
-        if (!userInfo) {
+        if (!userInfo || !isAdminPortalSSO(userInfo.requested)) {
           return null;
         }
 
@@ -152,8 +153,12 @@ export default NextAuth({
     },
   },
   callbacks: {
-    async signIn({ user, account }): Promise<boolean> {
+    async signIn({ user, account, profile }): Promise<boolean> {
       if (!user.email) {
+        return false;
+      }
+
+      if (account?.provider === 'boxyhq-saml' && !isAdminPortalSSO((profile as any)?.requested)) {
         return false;
       }
 
