@@ -1,0 +1,295 @@
+# Precisely CI.
+#
+# Upstream's own workflow (.github/workflows/main.yml) is left untouched but is
+# disabled in the repository's Actions settings, because it builds and publishes
+# artifacts to BoxyHQ/Ory's registries. This workflow is the Precisely
+# replacement: it runs every check and build upstream runs, and pushes the
+# container to our own Artifact Registry: on a merge to `precisely` to the
+# `services` repository, and for a pull request from a branch of this repository
+# to `services-pr`, so the change can be deployed to staging by hand. A pull
+# request from a fork builds the image but never authenticates or pushes. It
+# publishes nothing to BoxyHQ/Ory: no npm publish, no Docker Hub or GHCR login,
+# no signing step — see PRECISELY.md.
+#
+# It builds and pushes the image, but stops there.
+# Rolling the image out to a cluster stays a deliberate act: deploy_shelob.sh is
+# never called from here.
+
+name: Precisely CI
+
+on:
+  push:
+    branches:
+      - precisely
+  pull_request:
+    branches:
+      - precisely
+  workflow_dispatch:
+
+# contents: read is all the checkout needs. The image job alone also asks for
+# id-token: write, which mints the short-lived OIDC token Workload Identity
+# Federation exchanges for GCP credentials; the checks and tests have no use for
+# it.
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Checks, build and tests
+    runs-on: ubuntu-latest
+    env:
+      NEXTAUTH_SECRET: secret
+      NEXTAUTH_URL: http://localhost:5225
+      NEXTAUTH_ACL: '*@boxyhq.com'
+      DB_ENGINE: sql
+      DB_URL: postgres://postgres:postgres@localhost:5432/postgres
+      DB_TYPE: postgres
+      DB_ENCRYPTION_KEY: 'IDv0Q/4meshxZOvDhtZUWsHMRf9VCvBt+PoB8z3bZV8='
+      DEBUG: pw:webserver
+      SAML_AUDIENCE: https://saml.boxyhq.com
+      API_KEYS: secret
+      OPENID_JWS_ALG: RS256
+      OPENID_RSA_PUBLIC_KEY: 'LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUFtRzRtVXhmYll3OTAxRHNzZXVaSwpqMlFSVXIrL2FpWWxyVCs1NkxwK1pETDByVmhpVVdHSCtBK09jT24xZW9mS2tJTktvVTBVQmR1S2RTZ2ZuNkk0Ckg2cUNTdXhCaW50alloZTM5a1ZqMXFUL2o3UGtCWXFtQXhxVnZiY25lMERCczJBVnUyeStSS3ZBMC9RQUUwQk0KMlJrakFCcXFQTHFHOWtLSVBmTHJSVG82ZGNuNjduZm10bCtHNkVQVEtqRWZpRExvYWJ3bFF6VGJQVm5UcGVLbgo2V0NPMkpFVHpicng3T1k2S0J1QTllVDJlRS9CNGVPeVU1bUlqVEVhV1BqcmFZWWVPNnVyVEo5Qmsxa3pveWNrClZ2MG94K2VCZUh2NEpDSVhicGJxQnN3L0hhekVyWFJjQjR5TGVDd0lnRUllL2xhRkJiOE5odVdCQ3NmNXd4Z3EKNzZIc0xYN2FBSEwraGZEaDJmayt2aFlWQmc4dlBwQ0QrODJiLzBQMHhkRXR1elViMlo5eDdxNjR1alBBSTJsMwpSUWdqVzdvV0xDVHZRRVB0SUd3SVppRGdSM1FYRk5pYVpuQUFCalVwSElyVG1DYW85N3hPS1ZOS0FaUk9kWHpRCko0anM5SlZvZnFmTmViQ1hBWFVBOExwYlNtS3g4S3VRZkVQeXVUUTAzR3lCQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=='
+      OPENID_RSA_PRIVATE_KEY: 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUcvUUlCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQnVjd2dnYmpBZ0VBQW9JQmdRQ1liaVpURjl0akQzVFUKT3l4NjVrcVBaQkZTdjc5cUppV3RQN25vdW41a012U3RXR0pSWVlmNEQ0NXc2ZlY2aDhxUWcwcWhUUlFGMjRwMQpLQitmb2pnZnFvSks3RUdLZTJOaUY3ZjJSV1BXcFArUHMrUUZpcVlER3BXOXR5ZDdRTUd6WUJXN2JMNUVxOERUCjlBQVRRRXpaR1NNQUdxbzh1b2IyUW9nOTh1dEZPanAxeWZydWQrYTJYNGJvUTlNcU1SK0lNdWhwdkNWRE5OczkKV2RPbDRxZnBZSTdZa1JQTnV2SHM1am9vRzREMTVQWjRUOEhoNDdKVG1ZaU5NUnBZK090cGhoNDdxNnRNbjBHVApXVE9qSnlSVy9Takg1NEY0ZS9na0loZHVsdW9HekQ4ZHJNU3RkRndIakl0NExBaUFRaDcrVm9VRnZ3Mkc1WUVLCngvbkRHQ3J2b2V3dGZ0b0FjdjZGOE9IWitUNitGaFVHRHk4K2tJUDd6WnYvUS9URjBTMjdOUnZabjNIdXJyaTYKTThBamFYZEZDQ05idWhZc0pPOUFRKzBnYkFobUlPQkhkQmNVMkpwbWNBQUdOU2tjaXRPWUpxajN2RTRwVTBvQgpsRTUxZk5BbmlPejBsV2grcDgxNXNKY0JkUUR3dWx0S1lySHdxNUI4US9LNU5EVGNiSUVDQXdFQUFRS0NBWUFMCkNYL0VLTUF4a1MwUkVIdFJKMU5yQkZDR1RMek9FWGJOTDRYMU9tcThNOTNZWHVQWWwyNnVXU2NEMlViMWNUZHIKUlJ4dVowdTl2RmF2VXNGT2NHTXV0TXlVSXYwQWExeUgvZVpyd2p5L1RpbDBsTzZiOFowQmNNZDZxaFJGWmd3WQpna3EwakdSUENkNHZvclZ1TDJ2WkZPcytQdEFJajJ1R0VZMTJxZHdjQWtJNUpPL0MzR0x6M2VFaGVJYkY0WEp5CmJOZzhEcnZtZk1GcXRQSkFxdE9rY0FITDM5NWVtVXlhN2hVME1nQ2huV3QwelBhaGxmaUR1ZVJqcjlSajhKc1QKZllqcGQzelZZc0ZQMy85aWRjRW9NUk1DVEFnelZEVXBrbCt3ajhrOFVxTWUvdjdrVFlKTHBQMHQ5N2xsR3FaUwo4dEdpeXRidTRlems5NDNFZ2IwNDM3Q1VndVdQV3BsVzEzUDlSSUV4bkZjd2F4Uk15RWV1RFRxcHg1NWxTdE81CmZXOTdzSFFuM2dQbWVpaTVRODdUM0FzYkY5bHZ5d1g5bDlMdUJoc0RLdlRRVVRpV2cyRFV6bjlQRWRFb0xLWnYKd0xFU1VDZkFSd1NzZU5Kbm80TlRPUUc3ekFvdEsvRFhWWms4NFZ5dUlvMEpsS08wM202dEpORXl5Z1gwNUtrQwpnY0VBMExvSHVlRXAzOHRheWU0aEROWlFqVi9tc1RKek56SmhVOGZXNFlZaGMyOFdFVlF2N0lTNUw2N2draGhxCkoxUklEZTBtYUI5a1Q1Z09GR1VPdy9JYUdxWnB4WUphcUlZZ25GeFk4VmE4cHB6R0hFV25xeEdMNytESHg2U0oKb3FHUkd4UWRUU1QvY3lZZnVyR2RHaVVMd08xZjF5dUJVM01WdEU1S2VSRTlDSEVUV2FiOEhXQ0VhekFsNWVxOAo2aVNXdU9wQlFRa3NucStudTNIYXNPOGIxOU4zZ0x5Y2ZWb1ZzWnByd0RENzBCTXZkTFNDdVVrNW0rY1FINVdsCkN2dVpBb0hCQUxyMERmdTE1UjZuUTFIT3BTODFVSXNqTzJ0dm12OVpQMjVqbklPdUYxYnFob0xzTEdCbkhnUkwKM1VZNnRmT3E2a2ZZZlZwWWxINjZ4MHRvK3lvQ2Fodk11NXo0ZEV3M2hQb1F5Tk1IZkcyQklMOVVhV3VjZEFHWgpYOXY2WkI5U3o3NWd2M3BJQUZwdzhwUHlvZzhqbWdDM1dQaXBIek0wOTRCYmZJL0tramlYeWNrRGx5ZDAvZ2FQCmhPbXV1MnM4aVl6QUcwd1BpOFJ4VVRTS2tFZnlUNnF4ZGxwdUFNTEhkTGxKdnRKejMrNWEzZlJvUmdXb1Vld3kKcHlodXpHZkpLUUtCd0dqS3JTeFdibGFNV3hWOGQ1MWhUK25hbHhDcG1vekF2M3AzbjF0MG93QzRhZVRqVm5neApubVBoTWFCSG42d0ZOWFBBZDRMWkY5eWFJNTk3cVRFWk1KL21vcjNsbHl4NndvNmVFbzJBRlpDMHJ3WHN0cVE5ClYvdGo2QWxFZzFGaU9sN1U5MjBPd1MySG0zQjQwYjRaa1ZBWUhRRURONWUwOU5Xa1pPRnBsVEhTeTNzOFNlRloKM3NHTjE4a1oxQ1RkbjhwUTJkZ1VDaEhWY0ttOEhLYXVOVlZqTnVFc1VJamluSGVoWnEyRUtqaXFHUzVIbmtYMgpESFZJU2FFQjJXMnRLUUtCd0RnRkphT0ZUOUN0b2ppRFNYQXA4NmFkdWhKcGNQS1BGYmpJVklBSXpLbVl3UkcrCkgxWUwwQ3pOWnRMQ2lQOG8rZWJwY2paK1VKRGcreE1YdEJ0VWVlTTJxQWxUVWRYODFQWHh6WnVlcEtSVGl6S0oKNHNVQ0xxakVBcnR4L2twOGtBK21BZnBzVk43RTlZdHJxekFLSlAyTjh6VWZ5Ritad1loTzRiWmNweEFhTzdibQpRb2JxUWF4Sm1UUkV6WmhHblpqMWY3aDgrQTYzUGZRV2lVRmwxSVY3ZzlGNUlQVTh1emRDWjlHOE14L0RUcnNMCis5OTZIb0krYzJSa1B3L2ljUUtCd1FDNDF1VzlRQWVkRzdXWFNvMGcrYXNkSm9rNEQrZ21iZCtkQnU4R1R4MUIKWlBlVlRzZ0wwR1NMVXVrNlZHRXh2RkV0cWhoaHh2amdXdWpNaVBDd093cFBxQ1JaYmVnSDM4WG1pMWh5dXNIeQpwYzh1ekU0OHZ1ajgvYlJScDR4MFppQXJJZUZGOGNCaVV4Y292ZCtOYzd6d1dsTGhaakJkNS9mL3U2VllGS0Y0CktjSkRjb1JaWWM3Tm9DSXA4aFpBSlhXNjFWMXY3NWVxVDlYUldHaVNkNlB3Z3ZhQzUwNkFPeVgvOWNJNFltSVIKeHppM3RweW40bmJjUUdFZHpsMHFKVVU9Ci0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K'
+      PLANETSCALE_URL: mysql://root:mysql@localhost:3308/mysql
+      DYNAMODB_URL: 'http://localhost:8000'
+      POLIS_NO_ANALYTICS: '1'
+      IDP_ENABLED: true
+      AWS_ACCESS_KEY_ID: secret
+      AWS_SECRET_ACCESS_KEY: secret
+      POLIS_LICENSE_KEY: 'dummy-license'
+    strategy:
+      matrix:
+        node-version: [24]
+
+    services:
+      postgres:
+        image: postgres:18.4
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_PASSWORD: ''
+          POSTGRES_HOST_AUTH_METHOD: 'trust'
+        # Set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mocksaml:
+        image: boxyhq/mock-saml:1.4.2
+        ports:
+          - 4000:4000
+        env:
+          APP_URL: http://localhost:4000
+          ENTITY_ID: https://saml.example.com/entityid
+          PUBLIC_KEY: 'LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURiVENDQWxXZ0F3SUJBZ0lVUWR0Q05FRnRGYWF6OUtNYkp6eUhCVm5vMWZFd0RRWUpLb1pJaHZjTkFRRUwKQlFBd1JURUxNQWtHQTFVRUJoTUNSMEl4RXpBUkJnTlZCQWdNQ2xOdmJXVXRVM1JoZEdVeElUQWZCZ05WQkFvTQpHRWx1ZEdWeWJtVjBJRmRwWkdkcGRITWdVSFI1SUV4MFpEQWdGdzB5TkRBME1UUXhNVFUwTkRkYUdBOHpNREl6Ck1EZ3hOakV4TlRRME4xb3dSVEVMTUFrR0ExVUVCaE1DUjBJeEV6QVJCZ05WQkFnTUNsTnZiV1V0VTNSaGRHVXgKSVRBZkJnTlZCQW9NR0VsdWRHVnlibVYwSUZkcFpHZHBkSE1nVUhSNUlFeDBaRENDQVNJd0RRWUpLb1pJaHZjTgpBUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBTXpaTFprL2VBUXExZ3BmdWR0cklXdC9MbzZaRjFveXp4T09PV2xmCndSR1ZoT1VjbkEwb2g1SmxXdUQ4TjdEQzMyY2p0OER3dXpRcGZWcWk0M1hOVnhNbG4yTm9NUlJJNVhjQlpYMkYKai9mdnphTG5nUkk1ZkQ3WGxHRGlQcktHOGVWR2YvUzAzYnVWS2d1VzFaSldUL0xlZzlqNWtXS3RxWTA0a3M1SwpET29IN0JOaGNYaXE2R2ZYek5FL0F0WFBKYWF1OU1SRG5ZclYvVFlINENBR2hSclNBc0pROU5zYXJFWjZKN21SClY2VE4xNU9KS2ZpSHhRUURNMWJvTkYzdVMwSkFuc3BtcElHTERlQ0xzdkNHTEwyeGFxVHJXVzVvMnlrWkxsYm4KSThuOG1WcHBQams2MElsVFUyWjJ5TW9ZL0VmRE9CcUIwSWdNa1U3dzlQSVdla01DQXdFQUFhTlRNRkV3SFFZRApWUjBPQkJZRUZCaUNTNEswejdlR2lWYXI2dlUrb2lzWEdkWlVNQjhHQTFVZEl3UVlNQmFBRkJpQ1M0SzB6N2VHCmlWYXI2dlUrb2lzWEdkWlVNQThHQTFVZEV3RUIvd1FGTUFNQkFmOHdEUVlKS29aSWh2Y05BUUVMQlFBRGdnRUIKQUNpMFZSN0lHdmdHbmdyL1lpZkxZZzZwWUlFc010cGFsMmYxekMzZGpkRElPTHlmVk12aTJzdUtUazM2MkNGeApXU2lxaVc4UXhPbDZlZTdrUVhTbnpJVlRMb2hwcm5WVFVmeUpXUlpJdThvbGpkREprSE9yekV3YktqZUhsbU1PClZxODZGbzBpN0NnTG1oTjh1dDVyNFdHdytYVElZc2lkZC9SaUFGMlFRMVR4QkJaN3hoZVJlU0o5M0tGd29FbkQKcU5hLzE2VUpsdWpXbmRTMEF2Q09weEFnWXJFL1czbzJqUWVnczZmMnhWemozbFc2WVpEaVg5YXBrUTVKZWlscwp3WFRuSHMvL3dlcCsvWndYbXcrYXQrNXRXRU9ycU15TERDbXpFc294MFBmQUhZdlQ4M0hTMWZtL2RiQUJHNlJwCkcxTU41OUMyYmRxUHd3K0hUVEplZFVvPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=='
+          PRIVATE_KEY: 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2d0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktrd2dnU2xBZ0VBQW9JQkFRRE0yUzJaUDNnRUt0WUsKWDduYmF5RnJmeTZPbVJkYU1zOFRqamxwWDhFUmxZVGxISndOS0llU1pWcmcvRGV3d3Q5bkk3ZkE4THMwS1gxYQpvdU4xelZjVEpaOWphREVVU09WM0FXVjloWS8zNzgyaTU0RVNPWHcrMTVSZzRqNnlodkhsUm4vMHROMjdsU29MCmx0V1NWay95M29QWStaRmlyYW1OT0pMT1NnenFCK3dUWVhGNHF1aG4xOHpSUHdMVnp5V21ydlRFUTUySzFmMDIKQitBZ0JvVWEwZ0xDVVBUYkdxeEdlaWU1a1Zla3pkZVRpU240aDhVRUF6Tlc2RFJkN2t0Q1FKN0tacVNCaXczZwppN0x3aGl5OXNXcWs2MWx1YU5zcEdTNVc1eVBKL0psYWFUNDVPdENKVTFObWRzaktHUHhId3pnYWdkQ0lESkZPCjhQVHlGbnBEQWdNQkFBRUNnZ0VBQ0NPbytDblpidkQweUR5OWVjWnI4WVdBS0JKVkp6UlZuZ1ZNcXE4dlVLK00KTkQ1S3hRc1ROL0huQm9GL0JQcjVQWFBoM1R5emM0TWlnL05zN2tWV2JHQldVUERXNG1OekdxTm5rUEU1b3pSWQpDMXovZCtYbzFlWmk4dWFLYnpXRmJ3SzZHdE1FN0dzazNJa0Z1MmJLam0vZzlVSVZVTUp0dGpyRk9vVWV0ajNBCkpFWU5TZFplWFA2Z0RXeitlR0F6V2RXRnlNZ1hHT0hCanVMekt1S3kwb2xQaUFHRTJIMlhicHlCSEk2K09taHUKemU4VEhYSUg0YW1TOTdaN0ZlWTdZaDZPV0xoeVByaVh3VGZjNk1NaktubUdWOWQ3RytVanIyS3NVNGtYMG1MRApQKzhsS1NqVnFvUjF2YUswWEJiV0Fnd0kwbVd4TjhQMFZqSzRjMzJUNFFLQmdRRG9wZUJ6cE1xVjFlY24ydkFzCnkvRW5JeXdMcUlBVUZuRXRsRnlnMkVOM2ZZMDRkUTBqOWNzM0ZqbXNQK3grYjA1U2pJK05vVVQzRUowNC96Uk8KMFcvcmc0cEVTUlNDOHRtelliUGkycktrc2xLSDhmUWd2YzZKV1FVUThsWWx2elh6OTZiTFlxeFNtK0EwZ1Z4QQpEc2JNQk5NZDEzdk5Wa1VjTURsMnNveTNMUUtCZ1FEaGFQWnF4QzRxSVB1TlhOZE5EbExRVGZIWGxFMzRRTXVaCnNiM3J1NVdwbkJOdWpCU0xHREV2a0pvckprcUZ1b3VYUnVOOGIrd3BObi9lc0c3TjZyM3o5bHltRkI1VE1Ba3kKTlBPR0dDNWdqOU0wVytGTmw4M2dIVkN6eVgxa3VyR2t1amVHM1F1b2RoYXZBaWpqUzdnNW5Nb1J3OEpwcitUdwp4NEtKMC92ZEx3S0JnUURBSjVHMXNweXBHVjJ0YTRZSVdnSTZvekJVQ0w2UTJPQnVGeVpTcTQwOStuTlQrRW44Ck01Mi9TQm9talQzV1NEVFd0Y1l6NHNuRmp2RnRERXkxOVFLTjhiMllIUXhXQkNPUHA5a2VQQ2hsSSt4SzRLc1YKQi9DNVBNK1VhYlNCeE9iWk5PbU0vMWo1ZWttNjFFWFBtdVRUeWdCZG00ZGoyQ2VJMnNQN3FBblZtUUtCZ1FDZgp0T0N5OE9ETWxLWG1tTnNyQzNUOWhkeE9KQlBDU3haMmhRck5WUkZMSlB4WG5RU0pNTkRZcEptMjdPQnNNNm5uCnV5QSs4SVhoQlc0Lzk3M3FRK0htVXExK05rN3VIZURHSStKUEpoN2w1OEY3SFlaYWxhNFdsbTZ4azVjMm9WaHcKSUVoclUzNkpFM0lxK1ZyREFNazhlS3hyUGNvblc2cllObU4xQ0M4eG5RS0JnUURiOGZTeDBQcHg1WisxL2tCMwpxVGc2RDJYY1YyZGVWNFdsOS9JQ2owRHFqaGpXekJjaThuTjUyb3ZoSmVXcFVxWnJ1eStVWTg2cVRuK09oNGVJClNkZFRBb0F2cU1sL2gzVzdCRUdad2NsclRJSWRqTHVmK0FuRGN5S0lKY21CUG9JZGsydzZ4dkNWczJqbmdEOTMKcjZ0R3VoNHlvM2pIRkRTR0Y3dDdCRk5RSEE9PQotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg=='
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          check-latest: true
+
+      - run: node -v
+      - run: npm -v
+
+      - name: Setup Next.js cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.npm
+            ${{ github.workspace }}/.next/cache
+          # Generate a new cache whenever packages or source files change.
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**.[jt]s', '**.[jt]sx') }}
+          # If source files changed but packages didn't, rebuild from a prior cache.
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
+
+      - run: npm i
+      - run: npm run check-lint
+      - run: npm run check-types
+      - run: npm run check-format
+      - run: npm run check-locale
+      - run: npm run build
+
+      # We run Postgres and nothing else, so upstream's multi-engine storage
+      # suite is not worth eight extra service containers. Everything it covers
+      # is upstream code we do not touch, and the Postgres path it exercises is
+      # covered end to end by the e2e run below, which drives the app on
+      # Postgres. Moving the file aside keeps `npm run test` as upstream defines
+      # it; if upstream ever renames the file this step fails loudly rather than
+      # silently skipping nothing.
+      - name: Skip the multi-engine storage suite
+        run: mv npm/test/db/db.test.ts "${RUNNER_TEMP}/db.test.ts.skipped"
+
+      # The library tests cover npm/src/directory-sync/scim/DirectoryUsers.ts,
+      # which is the one upstream file we modify.
+      - run: npm run test
+        working-directory: ./npm
+
+      - name: Install playwright browser dependencies
+        run: npx playwright install chromium
+
+      - name: e2e tests
+        run: npx ts-node --log-error e2e/support/pretest.ts && npx playwright test -x
+
+      - name: Upload e2e trace
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 2
+
+  image:
+    name: Container image
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # persist-credentials: false matters more here than anywhere: the build is
+      # COPY . . in a public repository's image, and the token must not be in
+      # .git/config when it runs.
+      - name: Check Out Repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A pull_request event stamps the merge commit rather than the commit
+      # under review, so take the head sha there. <short sha>-gh is the release
+      # tag every service uses.
+      #
+      # push_repo decides where, if anywhere, the image goes, and is the one
+      # condition the auth, login and push steps below test. service_account is
+      # the identity that push runs as; each account can write to its own
+      # repository only:
+      #   services     a push to `precisely`, i.e. a merge — the release image,
+      #                as github-actions-jackson
+      #   services-pr  a pull request from a branch of this repository, as
+      #                github-actions-jackson-pr
+      #   (empty)      anything else, fork pull requests included: build only
+      # A fork's pull request runs without access to this repository's
+      # identity, so it must never reach the auth step.
+      - name: Set build vars
+        id: vars
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          push_repo=""
+          service_account=""
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            commit_sha="$PR_HEAD_SHA"
+            if [ "$PR_HEAD_REPO" = "$GITHUB_REPOSITORY" ]; then
+              push_repo="services-pr"
+              service_account="github-actions-jackson-pr@precisely-production.iam.gserviceaccount.com"
+            fi
+          else
+            commit_sha="$GITHUB_SHA"
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/precisely" ]; then
+              push_repo="services"
+              service_account="github-actions-jackson@precisely-production.iam.gserviceaccount.com"
+            fi
+          fi
+          short_sha=$(echo "$commit_sha" | cut -c 1-7)
+          tag="${short_sha}-gh"
+          {
+            echo "tag=$tag"
+            echo "push_repo=$push_repo"
+            echo "service_account=$service_account"
+          } >> "$GITHUB_OUTPUT"
+          echo "IMAGE=europe-docker.pkg.dev/precisely-production/${push_repo:-services}/jackson:$tag" >> "$GITHUB_ENV"
+
+      # Built before authenticating on purpose: Dockerfile line 39 is `COPY . .`,
+      # and no credential material belongs in the build context of a public
+      # repository's image. Building first needs no credentials (the base images
+      # are public). The auth step below also writes no credentials file, and the
+      # checkout does not persist its token, so the ordering is a second line of
+      # defence rather than the only one.
+      #
+      # Plain docker build, not build-push-action: buildkit's default
+      # provenance/SBOM attestations would publish an OCI index where the
+      # clusters and Shelob expect a plain image manifest. The build runs on
+      # every event, which is what catches a Dockerfile broken by an upstream
+      # sync; only the push depends on push_repo.
+      - name: Build container
+        env:
+          DOCKER_BUILDKIT: '1'
+        run: |
+          docker build -f Dockerfile -t "$IMAGE" .
+
+      # Workload Identity Federation, not a service account key. This repository
+      # is public, so a long-lived key stored here would be one careless step
+      # away from a world-readable log or artifact; a federated token lasts
+      # minutes and is only issued to a workflow run in this repository.
+      #
+      # None of these values is a secret, so they are written out rather than
+      # hidden in an org secret this repository may or may not be granted.
+      # All come from ../iap/gcp-github (pulumi stack `production`): the
+      # provider is the shared `workloadIdentityProvider` output; the service
+      # account is picked in `Set build vars`. There are two, and each exists
+      # only to push this image:
+      #   github-actions-jackson     `jacksonServiceAccountEmail`; bound to
+      #                              refs/heads/precisely, artifactregistry.writer
+      #                              on `services` only
+      #   github-actions-jackson-pr  bound to the pull_request OIDC subject,
+      #                              artifactregistry.writer on `services-pr` only
+      # So a pull request run can never write a release image, and neither
+      # account holds anything else.
+      #
+      # An access token straight into docker login rather than gcloud: nothing
+      # else here needs gcloud, and it drops the pinned SDK version. This is the
+      # same thing Preciselyco/actions/gcp-auth does, written out because a public
+      # repository cannot use actions from a private one.
+      - name: gcloud auth
+        id: auth
+        if: steps.vars.outputs.push_repo != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions
+          service_account: ${{ steps.vars.outputs.service_account }}
+          token_format: access_token
+          # No credentials file in the workspace of a public repository's build.
+          create_credentials_file: false
+
+      - name: docker login
+        if: steps.vars.outputs.push_repo != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: europe-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      # The digest is recorded because that is what a deploy would be pinned to.
+      # Nothing here deploys: rolling this image out is a separate, deliberate
+      # act, and deploy_shelob.sh is not called from this workflow. A
+      # `services-pr` image is for staging only — see PRECISELY.md.
+      - name: Push container
+        id: push
+        if: steps.vars.outputs.push_repo != ''
+        run: |
+          docker push "$IMAGE"
+          digest=$(docker inspect --format='{{join .RepoDigests "\n"}}' "$IMAGE" \
+            | head -n1 | cut -d@ -f2 | cut -d: -f2)
+          if [ -z "$digest" ]; then
+            echo "::error::could not resolve image digest after push"
+            exit 1
+          fi
+          echo "pushed $IMAGE @ sha256:$digest"
+          {
+            echo "### Image pushed"
+            echo ""
+            echo "\`$IMAGE\`"
+            echo ""
+            echo "digest \`sha256:$digest\`  —  not deployed; roll out separately"
+          } >> "$GITHUB_STEP_SUMMARY"
