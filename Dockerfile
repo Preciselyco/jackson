@@ -51,9 +51,13 @@ FROM $NODEJS_IMAGE AS runner
 
 # Required to get the latest, CVE-free dependencies.
 RUN apk update && apk upgrade
+# Precisely (DEV-1299): trust the system CA store, not Node's built-in copy of
+# Mozilla's roots, and require a store without the eMudhra-compromised roots
+# (emSign ECC Root CA - G3). See PRECISELY.md section 5.
+RUN apk add --no-cache 'ca-certificates-bundle>=20261020-r0'
 WORKDIR /app
 
-ENV NODE_OPTIONS="--max-http-header-size=81920 --dns-result-order=ipv4first"
+ENV NODE_OPTIONS="--max-http-header-size=81920 --dns-result-order=ipv4first --use-openssl-ca"
 
 
 ENV NODE_ENV=production
