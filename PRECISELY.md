@@ -38,7 +38,7 @@ set of files we touch; it should always match the list below, with one exception
 | `pages/api/auth/[...nextauth].ts`               | modified | Refuses SAML sign-in from non-admin tenants  |
 | `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`    |
 | `npm/package.json`                              | modified | Declares the dependencies we add (see below) |
-| `Dockerfile`                                    | modified | Runtime Node trusts the system CA store only |
+| `Dockerfile`                                    | modified | Newer Node; runtime trusts system CA store   |
 
 ## Dependencies we add
 
@@ -391,6 +391,13 @@ The `runner` stage of `Dockerfile` therefore:
 
 The deployment's environment must not set `NODE_OPTIONS`, or it replaces this
 value. Drop the flag once Node's bundled store is the one we want to follow again.
+
+### Node version
+
+`Dockerfile` also pins `NODEJS_IMAGE` to `node:24.22.1-alpine3.24`, ahead of
+upstream's `24.18.0`, to pick up Node's October 2026 security release. On a
+sync, keep whichever of ours and upstream's is newer, and drop this change once
+upstream is at or past our version.
 
 ## 5. Syncing with upstream
 
