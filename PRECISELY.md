@@ -1,0 +1,425 @@
+# Precisely changes to Ory Polis
+
+This document describes everything Precisely has added on top of upstream
+[ory/polis](https://github.com/ory/polis) (formerly `boxyhq/jackson`). It is the
+reference for what lives in the `precisely` branch and why.
+
+The fork is deliberately small: upstream plus bug fixes (the SCIM user PATCH and
+the admin-portal sign-in check), our CI and our deployment. It adds no API of its
+own. **kvasir reads Jackson's database directly** rather than calling a
+Precisely-specific API, so Jackson's storage layout is an interface we depend on
+— see _Syncing with upstream_ below.
+
+**Keep this document up to date whenever a file in the list below is added,
+changed or removed.** It is organised by file, not by commit, because the
+`precisely` branch is rebased onto `main` and commit ids do not survive that.
+
+## Branch model
+
+- **`main`** — a mirror of upstream `ory/polis`. Nothing of ours goes here.
+- **`precisely`** — our branch. All Precisely-specific changes live here, on top
+  of `main`. This is the branch we build and deploy.
+
+Upstream is pulled into `main`, then `precisely` is rebased onto `main` (see
+_Syncing with upstream_). `git diff main...precisely --stat` shows the complete
+set of files we touch; it should always match the list below, with one exception
+— see _Lockfiles_ below.
+
+## Files we own or modify
+
+| File                                            | Kind     | Purpose                                      |
+| ----------------------------------------------- | -------- | -------------------------------------------- |
+| `PRECISELY.md`, `CLAUDE.md`                     | added    | This document and the repo working guide     |
+| `Makefile`                                      | added    | Manual container build and push              |
+| `deploy_shelob.sh`                              | added    | Rollout call to Shelob                       |
+| `.github/workflows/precisely.yaml`              | added    | Our CI — checks, tests, and the image push   |
+| `lib/adminPortalSSO.ts`                         | added    | Admin-portal tenant check for SAML sign-in   |
+| `e2e/precisely/admin-portal-sso.spec.ts`        | added    | Tests for that check                         |
+| `pages/api/auth/[...nextauth].ts`               | modified | Refuses SAML sign-in from non-admin tenants  |
+| `npm/src/directory-sync/scim/DirectoryUsers.ts` | modified | SCIM user PATCH rewritten on `scim-patch`    |
+| `npm/package.json`                              | modified | Declares the dependencies we add (see below) |
+| `Dockerfile`                                    | modified | Runtime Node trusts the system CA store only |
+
+## Dependencies we add
+
+Upstream's dependencies are left alone. We add:
+
+| Package      | Declared in        | Why                                                 |
+| ------------ | ------------------ | --------------------------------------------------- |
+| `scim-patch` | `npm/package.json` | Applies SCIM PATCH operations — see section 2 below |
+
+If a Precisely change needs a new package, record it here as well as in the
+relevant `package.json`.
+
+## Lockfiles
+
+`npm/package-lock.json` and the root `package-lock.json` are **generated
+artifacts**, not changes we maintain. They appear in `git diff main...precisely`
+purely as a consequence of the packages listed above, so they are deliberately
+absent from the file table and need no entry here when they move.
+
+Both matter: the container image is built with `npm ci` from the **root**
+lockfile, which is where npm records the `npm/` workspace's dependency tree. A
+root lockfile that does not list `scim-patch` makes `npm ci` fail.
+
+After an upstream sync, do not hand-merge a lockfile conflict. Take upstream's
+version and regenerate it, so it picks our added packages back up:
+
+```bash
+git checkout main -- npm/package-lock.json
+cd npm && npm install     # regenerates npm/package-lock.json
+cd .. && npm install      # regenerates the root package-lock.json
+```
+
+Commit the regenerated lockfiles alongside the change that needed them.
+
+## 1. Build and deployment
+
+### `Makefile`
+
+Builds and pushes the container image manually:
+
+```
+make            # docker build, tags :$(git describe --always) and :latest
+make docker-push
+```
+
+Image name: `europe-docker.pkg.dev/precisely-production/services/jackson`.
+
+### `deploy_shelob.sh`
+
+The manual rollout. Run
+`deploy_shelob.sh <cluster> jackson <short sha>-gh provisioning`; it POSTs
+`{deployment, tag, namespace}` to Shelob to roll out that image.
+
+Shelob authenticates the call with a short-lived token for the
+`shelob-deployer` Kubernetes service account of the target cluster. The script
+creates one itself with
+`kubectl --context <context> create token shelob-deployer -n default --audience=shelob --duration=10m`
+and sends it as `Authorization: Bearer <token>`, through a temporary header
+file rather than the command line. Creating the token needs the cluster's
+kubectl context configured and membership of developers@precisely.se; the
+script stops with an error if it gets no token.
+
+- `<cluster>` — `staging` selects `shelob.stg.precisely.se` and the
+  `precisely-staging` context, `production` selects `shelob.precisely.se` and
+  the `precisely-production` context. Any other value is refused.
+- `SHELOB_TARGETS` — optional environment variable, a space-separated list of
+  Shelob hosts. When set, it overrides the cluster-derived host and the script
+  posts to every target, failing if any of them fails. The token still comes
+  from the `<cluster>` context and is only valid for that cluster's Shelob, so
+  every target must belong to it.
+- `IMAGE_REPOSITORY` — optional environment variable. Set it to `services-pr` to
+  roll out an image a pull request built (see _The image push_ below); the script
+  then adds `"image_repository": "services-pr"` to the body, the same field the
+  shared `shelob-deploy` action sends. Empty means the release repository,
+  `services`. Any other value, or `services-pr` with a cluster other than
+  `staging`, is refused.
+
+Deploying a pull request's image to staging:
+
+```bash
+IMAGE_REPOSITORY=services-pr ./deploy_shelob.sh staging jackson <short sha>-gh provisioning
+```
+
+`<short sha>` is the first seven characters of the pull request's head commit.
+The token is created through the `precisely-staging` context.
+
+Cloud Build and `cloudbuild.yaml` are retired.
+
+The deployment always targets the `jackson` deployment in the `provisioning`
+namespace.
+
+### `.github/workflows/precisely.yaml`
+
+Our GitHub Actions CI. It runs on pushes and pull requests against `precisely`,
+and on `workflow_dispatch`. Two jobs:
+
+- **`ci`** — `check-lint`, `check-types`, `check-format`, `check-locale`,
+  `npm run build`, the `npm/` library tests, and the Playwright e2e suite against
+  `mock-saml` (which includes `e2e/precisely`). The `env` block is copied verbatim from
+  upstream's `ci` job, so it should be re-copied if upstream changes it.
+- **`image`** — builds the `Dockerfile` on every run, which is what catches a
+  Dockerfile broken by an upstream sync, and pushes it to our Artifact Registry:
+  on a merge to `precisely` to `services`, and for a pull request from a branch
+  of this repository to `services-pr`. A pull request from a fork builds and
+  stops — it never authenticates or pushes.
+
+#### The image push
+
+```
+europe-docker.pkg.dev/precisely-production/services/jackson:<short sha>-gh      # merge to precisely
+europe-docker.pkg.dev/precisely-production/services-pr/jackson:<short sha>-gh   # same-repo pull request
+```
+
+`<short sha>-gh` is the release tag every service uses. For a pull request the
+short sha is the pull request's **head** commit, not the merge commit GitHub
+checks out.
+
+Which of the two (if either) is pushed is decided once, in the `Set build vars`
+step, as its `push_repo` output; the auth, login and push steps all run only when
+it is non-empty. `services-pr` is the pull request registry the other services
+use too: its images are for deploying to **staging by hand** (see
+`deploy_shelob.sh` above), never to production. A pull request does not need
+`pull_request_target` for this — a branch of this repository already gets the
+OIDC token on `pull_request`, and a fork's run never reaches the auth step.
+
+Registry auth is Workload Identity Federation, not a service account key. **This
+repository is public** — it is our fork of `ory/polis`, and GitHub does not allow
+a fork of a public repository to be made private — so a long-lived key stored
+here would be one careless step away from a world-readable log or artifact, and
+would stay valid until somebody rotated it. A federated token lasts minutes and
+is only ever issued to a workflow run in this repository.
+
+None of the values in the workflow is a secret, so they are written out rather
+than kept in an org secret:
+
+|                                |                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `workload_identity_provider`   | `projects/179949444356/locations/global/workloadIdentityPools/github-actions/providers/github-actions` |
+| `service_account` (merge)      | `github-actions-jackson@precisely-production.iam.gserviceaccount.com`                                  |
+| `service_account` (PR, branch) | `github-actions-jackson-pr@precisely-production.iam.gserviceaccount.com`                               |
+
+All are managed in the `iap` repo, `gcp-github` (Pulumi stack `production`). The
+provider is its `workloadIdentityProvider` output, and the merge account its
+`jacksonServiceAccountEmail` output; the pull request account comes from the
+sibling `iap` change and, until that is applied, the pull request push fails to
+authenticate. The pool and provider are shared with the other Precisely
+repositories; the two service accounts are not. The `Set build vars` step picks
+the account, as its `service_account` output, alongside `push_repo`:
+
+- **`github-actions-jackson`** — used on a push to `precisely`. Bound only to
+  `refs/heads/precisely`, and holds `roles/artifactregistry.writer` on the
+  `services` repository only.
+- **`github-actions-jackson-pr`** — used for a pull request from a branch of this
+  repository. Bound only to the `pull_request` OIDC subject, and holds
+  `roles/artifactregistry.writer` on the `services-pr` repository only.
+
+Neither has any project-level role. Splitting them means code under review can
+never write a release image: a pull request run can only mint a token for the PR
+account, and that account cannot write to `services`.
+
+That separation is deliberate. The shared `github-actions` service account also
+holds `roles/container.developer` and `roles/storage.admin`, so binding a public
+repository to it would let anything running on `precisely` deploy to our clusters
+and read or delete any bucket in the project.
+
+Only the image job asks for `id-token: write`, which is what lets it mint the
+OIDC token; it grants no access to this repository. The auth step hands docker an
+access token directly, so there is no gcloud and no credentials file.
+
+It is a plain `docker build` / `docker push` rather than `docker/build-push-action`
+on purpose. BuildKit's default provenance and SBOM attestations publish an OCI
+index, where the clusters and Shelob expect a plain image manifest. The
+cost is losing the cross-run buildx cache, which is worth roughly 2½ minutes on
+the image job.
+
+The image is built **before** authenticating, and `Dockerfile` line 39 is
+`COPY . .`, so nothing credential-shaped may be in the workspace when it runs.
+This repository is **public**. Three things keep it that way: the build runs
+first; the auth step writes no credentials file (`create_credentials_file:
+false`); and both checkouts set `persist-credentials: false`, so the job token is
+not in `.git/config` either.
+
+**Nothing here deploys.** The push is where this workflow stops: `deploy_shelob.sh`
+is never called from it, and rolling an image out to a cluster stays a deliberate,
+separate act. The pushed digest is written to the job summary so it can be handed
+to a deploy.
+
+#### Postgres only
+
+Upstream's `ci` job runs nine service containers, because
+`npm/test/db/db.test.ts` exercises every storage engine Polis supports —
+redis, mongo, mysql, mariadb, mssql, dynamodb, planetscale and cockroachdb — from
+a hardcoded list with no way to select one. We run Postgres and nothing else, so
+that job spends most of its time pulling and health-checking databases we do not
+use.
+
+We therefore keep only two services, `postgres` (the app under e2e) and
+`mocksaml`, and move `npm/test/db/db.test.ts` aside before running the tests:
+
+```yaml
+- name: Skip the multi-engine storage suite
+  run: mv npm/test/db/db.test.ts "${RUNNER_TEMP}/db.test.ts.skipped"
+```
+
+`mv` rather than a `tap --exclude` flag, because `--exclude` does not filter the
+files `npm run test` passes positionally, and spelling the tap flags out in the
+workflow would drift the moment upstream changed them. If upstream renames the
+file, this step fails loudly instead of quietly skipping nothing.
+
+What this gives up is the storage layer's own test coverage, Postgres included.
+That is upstream code we do not modify, and the Postgres path is still covered
+end to end by the e2e run, which drives the real app against Postgres.
+
+The `db:migration:run:planetscale` step and the cockroachdb `docker-compose` step
+are dropped for the same reason. No migration step replaces them: `manualMigration`
+defaults to false (`npm/src/db/sql/sql.ts`) and `DB_MANUAL_MIGRATION` is unset, so
+TypeORM synchronizes the Postgres schema on boot.
+
+`PLANETSCALE_URL`, `DYNAMODB_URL` and the `AWS_*` variables in `env` are dead now.
+They are kept so the block stays a verbatim copy of upstream's.
+
+**It publishes nothing upstream.** There is no `npm publish`, no Docker Hub or
+GHCR login and no cosign/SBOM step; the only registry it touches is our own
+Artifact Registry. Rollout is `deploy_shelob.sh`, run by hand.
+
+#### Upstream's workflow
+
+`.github/workflows/main.yml` is upstream's, is **not** modified by us, and is
+deliberately absent from the file table above. It pushes images to Docker Hub and
+GHCR and publishes to npm, all gated on `refs/heads/release` and `beta-v*` tags —
+refs we never create — but it would still run its build on every push to `main`
+and twice a week on a cron.
+
+Rather than delete it and take a modify/delete conflict on every sync (18 of the
+169 commits in the last upstream sync touched it), it is left switched off.
+
+It is off today only because workflows in a fork start disabled: GitHub reports
+it as `disabled_fork`, not `disabled_manually`. To make it hold even if Actions
+are enabled for the fork, disable it explicitly:
+
+```bash
+gh workflow disable "CI" --repo Preciselyco/jackson
+gh api repos/Preciselyco/jackson/actions/workflows \
+  --jq '.workflows[] | "\(.state)\t\(.path)"'   # expect disabled_manually
+```
+
+That state is held by GitHub, not by the file, so it survives upstream editing
+the workflow. It does **not** cover a _new_ workflow file arriving from upstream,
+which would be active from the moment it lands — so after an upstream sync, check
+the workflow list above and disable anything new.
+
+## 2. SCIM user PATCH rewritten on `scim-patch`
+
+`npm/src/directory-sync/scim/DirectoryUsers.ts`, method `patch()`.
+
+Upstream parses SCIM PATCH operations with its own `parseUserPatchRequest` /
+`updateRawUserAttributes` helpers, which mishandle some operations — notably
+patches against `emails`, where a changed work email was not applied.
+
+We replaced that with the
+[`scim-patch`](https://www.npmjs.com/package/scim-patch) library, our one added
+dependency (see _Dependencies we add_ above):
+
+- Each operation in `Operations` is applied **individually** to `user.raw` in a
+  `try`/`catch`, so one malformed operation from an IdP does not fail the whole
+  request. Failures are logged and skipped.
+- The patched raw object then becomes the user's `raw` attribute wholesale
+  (upstream merged deltas instead).
+- The flat columns are derived from the patched raw object: `active`,
+  `first_name` (`name.givenName`), `last_name` (`name.familyName`) and `email`
+  (the `emails` entry with `type === 'work'`). Because the patched raw object is
+  the source of truth, `first_name` and `last_name` are always rewritten, and
+  fall back to `''` when an `op: "remove"` has taken the field away — upstream
+  asserts this in `test/dsync/users.test.ts`.
+
+### Extension schema URNs in no-path operations
+
+`normalizePatchOperation()` in the same file.
+
+`scim-patch` reads the keys of a **no-path** operation's value object as dotted
+attribute paths. An extension schema URN such as
+`urn:ietf:params:scim:schemas:extension:enterprise:2.0:User` contains a dot, so
+it gets split and the attributes land under a truncated key. Entra sends the
+enterprise extension in exactly this shape:
+
+```json
+{ "op": "replace", "value": { "urn:...:enterprise:2.0:User": { "department": "Engineering" } } }
+```
+
+Before patching we rewrite URN-keyed entries of a no-path operation into
+path-based operations (`urn:...:User:department`), which `scim-patch` resolves
+correctly. Every other key is left in a single no-path operation so the merge
+semantics of a no-path operation are preserved. Path-based operations were
+already handled correctly and are passed through untouched.
+
+### Azure manager workaround
+
+Entra ID / Azure AD sends a PATCH that sets
+`urn:ietf:params:scim:schemas:extension:enterprise:2.0:User.manager` to a bare
+string, and then fails to parse its own value on the next read. After patching we
+detect a string `manager` and rewrap it as `{ value: <string> }`.
+
+This is a workaround for IdP behaviour, not a SCIM correctness fix — keep it
+until Azure stops doing this.
+
+### Upstream-sync risk
+
+This is the only change we make to the vendored `npm/` library, and it is a
+rewrite of a method upstream actively maintains. Expect conflicts here on rebase,
+and re-run the directory-sync tests (`cd npm && npm test`) afterwards.
+
+## 3. Admin-portal SAML sign-in tenant check (DEV-1031)
+
+Upstream's admin-portal sign-in (`pages/api/auth/[...nextauth].ts`) accepts any
+Jackson code. Neither provider checks which connection issued it:
+
+- `boxyhq-saml-idplogin` (IdP-initiated, `/admin/auth/idp-login`) exchanges the
+  code itself with `client_id=dummy` and the app's own `CLIENT_SECRET_VERIFIER`
+  (or an empty secret), so a code from **any** customer connection's IdP-initiated
+  login becomes an admin session.
+- `boxyhq-saml` (SP-initiated) takes `tenant`/`product` from the sign-in request,
+  so a connection whose allowed redirect URLs include our own URL can do the same.
+
+`lib/adminPortalSSO.ts` exports `isAdminPortalSSO(requested)`, true only when the
+profile's `requested.tenant`/`product` equal `ADMIN_PORTAL_SSO_TENANT`/`_PRODUCT`.
+`[...nextauth].ts` calls it in `authorize` for `boxyhq-saml-idplogin` and in the
+`signIn` callback for `boxyhq-saml`; credentials and email sign-in are unchanged.
+`e2e/precisely/admin-portal-sso.spec.ts` tests the check (it needs no browser or
+server). Drop all three once upstream ships an equivalent check.
+
+## 4. Runtime trusts the system CA store (DEV-1299)
+
+Node ships its own copy of Mozilla's root store and uses it by default, ignoring
+the image's `ca-certificates`. When a root has to be distrusted urgently — as with
+the eMudhra intermediate key compromise (October 2026), where the bad chains end
+at `emSign ECC Root CA - G3` — Alpine ships the fix days or weeks before Node
+does. Jackson fetches IdP metadata and OIDC discovery/JWKS over TLS, so it must
+not wait for Node.
+
+The `runner` stage of `Dockerfile` therefore:
+
+- adds `--use-openssl-ca` to `NODE_OPTIONS`, so Node verifies against OpenSSL's
+  default store (`/etc/ssl/cert.pem` → Alpine's `ca-certificates-bundle`)
+  **instead of** its bundled roots. `--use-system-ca` is not a substitute: it adds
+  the system store to the bundled roots, so a root Node still bundles stays
+  trusted. `NODE_EXTRA_CA_CERTS` keeps working either way.
+- installs `ca-certificates-bundle>=20261020-r0`, the first Alpine release without
+  `emSign ECC Root CA - G3`, so the build fails rather than ship an older store.
+  Raise the floor when a later distrust needs a newer bundle.
+
+The deployment's environment must not set `NODE_OPTIONS`, or it replaces this
+value. Drop the flag once Node's bundled store is the one we want to follow again.
+
+## 5. Syncing with upstream
+
+1. Pull upstream into `main`, which stays a plain mirror of `ory/polis`.
+2. Rebase `precisely` onto `main`. Expected conflict points are the upstream files we
+   modify, `DirectoryUsers.ts`, `[...nextauth].ts` and `Dockerfile`; take upstream's
+   lockfiles and regenerate them (see _Lockfiles_).
+3. Check `git diff main...precisely --stat` against the file table above.
+4. Run the checks (`check-lint`, `check-types`, `check-format`, `npm run build`,
+   `cd npm && npm test`) and the e2e suite, or let CI run them on the pull request.
+5. Disable any _new_ upstream workflow file (see _Upstream's workflow_).
+6. Drop a fix of ours once upstream ships an equivalent one: the admin-portal check
+   (section 3) as soon as upstream checks the tenant/product itself, the SCIM PATCH
+   rewrite (section 2) if upstream's own PATCH handling catches up.
+
+### Jackson's database is read by kvasir
+
+kvasir reads Jackson's Postgres database directly (the `jackson_store` and
+`jackson_index` tables). That only works because the store is unencrypted
+(`DB_ENCRYPTION_KEY` unset) and because kvasir knows how Jackson lays out its
+records. An upstream change to either is a breaking change for kvasir even though
+nothing in this fork changes. On every sync, check for changes to:
+
+- the store entities, `npm/src/db/sql/entity/JacksonStore.ts`, `JacksonIndex.ts`
+  and `JacksonTTL.ts`;
+- how store and index keys are built, `npm/src/db/utils.ts`, `npm/src/db/store.ts`,
+  `npm/src/db/db.ts` and `npm/src/db/sql/sql.ts`;
+- the namespaces and record shapes of SSO connections, OAuth codes and directory
+  sync (`npm/src/index.ts`, `npm/src/controller/oauth.ts`,
+  `npm/src/directory-sync/**`).
+
+If any of them changed, tell the kvasir side before deploying.
