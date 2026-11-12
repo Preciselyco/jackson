@@ -394,8 +394,8 @@ value. Drop the flag once Node's bundled store is the one we want to follow agai
 
 ### Node version
 
-`Dockerfile` also pins `NODEJS_IMAGE` to `node:24.22.1-alpine3.24`, ahead of
-upstream's `24.18.0`, to pick up Node's October 2026 security release. On a
+`Dockerfile` also pins `NODEJS_IMAGE` to `node:24.22.3-alpine3.24`, ahead of
+upstream's `24.18.0`, to pick up Node's November 2026 security release. On a
 sync, keep whichever of ours and upstream's is newer, and drop this change once
 upstream is at or past our version.
 
