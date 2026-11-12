@@ -139,6 +139,11 @@ and on `workflow_dispatch`. Two jobs:
   `npm run build`, the `npm/` library tests, and the Playwright e2e suite against
   `mock-saml` (which includes `e2e/precisely`). The `env` block is copied verbatim from
   upstream's `ci` job, so it should be re-copied if upstream changes it.
+  The `mocksaml` service image is pinned by digest as well as tag:
+  `boxyhq/mock-saml:1.4.2` was re-pushed on 2026-11-03 with the email field
+  labelled "Email", which the upstream e2e test (looking for "Please provide a
+  mock email address") cannot find. Keep the digest until upstream updates its
+  test or its mock-saml version.
 - **`image`** — builds the `Dockerfile` on every run, which is what catches a
   Dockerfile broken by an upstream sync, and pushes it to our Artifact Registry:
   on a merge to `precisely` to `services`, and for a pull request from a branch
